@@ -18,6 +18,7 @@ df = preprocess_dataframe(df, f, :id, :t, :absS; quiet = true)
     :absS;
     guess = Dict("group" => ones(10)),
     algorithm=:iv,
+    return_vcov=false,
 )
 
 @time givmodel_uu = giv(

@@ -1,4 +1,3 @@
-
 """
     giv(df, formula, id, t, weight; <keyword arguments>)
 
@@ -92,33 +91,36 @@ function giv(
         @error("Moment exclusion not supported for the selected algorithm. 
         Proceed without `exclude_pairs`")
     end
-    qmat, pmat, Cts, Cpts, ηts, Smat, exclmat = generate_matrices(
+
+
+    q, p, C, Cp, η, S, exclmat, obs_index = generate_matrices(
         df,
         formula,
         id,
         t,
         weight;
-        algorithm = algorithm,
-        quiet = quiet,
         exclude_pairs = exclude_pairs,
     )
-    N, T, Nmom = size(Cts)
+    N = obs_index.N
+    Nmom = size(C, 2)
+
+    if !quiet &&
+       algorithm ∈ [:scalar_search, :debiased_ols] &&
+       !check_market_clearing(q, S, obs_index)
+        @warn ("Adding-up constraints not satisfied. `up` and `scalar_search` algorithms may be biased.")
+    end
 
     # residualize against η
-    η = reshape(ηts, N * T, :)
-    cholη = cholesky(η' * η)
-    uq, λq_endog = residualize_on_η(vec(qmat), η, cholη)
-    uqmat = reshape(uq, N, T)
-    uCp, λCp = residualize_on_η(reshape(Cpts, N * T, Nmom), η, cholη)
-    uCpts = reshape(uCp, N, T, Nmom)
+    uq, uCp, λq_endog, λCp = residualize_observations(q, Cp, η)
 
     guessvec = parse_guess(formula, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
-        uqmat,
-        uCpts,
-        Cts,
-        Smat,
+        uq,
+        uCp,
+        C,
+        S,
         exclmat,
+        obs_index,
         Val{algorithm}();
         guess = guessvec,
         quiet = quiet,
@@ -127,21 +129,21 @@ function giv(
 
     λ = λq_endog + λCp * ζ̂
 
-    ûmat = uqmat + dropdims(sum(uCpts .* reshape(ζ̂, 1, 1, length(ζ̂)); dims = 3); dims = 3)
+    û = uq + uCp * ζ̂
     if return_vcov
-        σu²vec, Σζ = solve_vcov(ζ̂, ûmat, Smat, Cts)
-        ols_vcov = solve_ols_vcov(ûmat, ηts)
+        σu²vec, Σζ = solve_vcov(ζ̂, û, S, C, obs_index)
+        ols_vcov = solve_ols_vcov(σu²vec, η, obs_index)
         Σλ = ols_vcov + λCp * Σζ * λCp'
     else
         σu²vec, Σζ, Σλ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nmom, Nmom)
     end
     coefdf = create_coef_dataframe(df, formula, [ζ̂; λ], [slope_coefnames; factor_coefnames], id)
 
-    ζS = solve_aggregate_elasticity(ζ̂, Cts, Smat)
+    ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
 
     dof = length(ζ̂) + length(λ)
-    dof_residual = N * T - dof
+    dof_residual = nrow(df) - dof
 
     if savedf
         df = innerjoin(df, coefdf; on = intersect(names(df), names(coefdf)))
@@ -158,7 +160,7 @@ function giv(
         if string(ressym) in names(df)
             throw(ArgumentError("The column name $(ressym) already exists in the dataframe. Please rename it to avoid conflict."))
         end
-        df[!, Symbol(response_name, "_residual")] = vec(ûmat)
+        df[!, Symbol(response_name, "_residual")] = û
 
         meansym = Symbol(response_name, "_mean")
         if string(meansym) in names(df)
@@ -189,8 +191,8 @@ function giv(
         df,
         converged,
         N,
-        T,
-        N * T,
+        obs_index.T,
+        nrow(df),
         dof,
         dof_residual,
     )
@@ -224,8 +226,6 @@ function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
         throw(ArgumentError("Observations are not uniquely identified by `id` and `t`"))
     end
 
-    N, T = length(unique(df[!, id])), length(unique(df[!, t]))
-    nrow(df) == N * T || throw(ArgumentError("Only balanced panel is supported for now"))
     all(df[!, weight] .>= 0) ||
         throw(ArgumentError("Weight must be non-negative. You can swap the sign of y and S if necessary."))
     sort!(df, [t, id])
@@ -238,58 +238,75 @@ function generate_matrices(
     id,
     t,
     weight;
-    algorithm=:iv,
-    quiet = false,
     exclude_pairs = Pair[],
 )
-    # check data compatibility
+    # Ensure data is sorted by (time, id)
+    if !issorted(df, [t, id])
+        sort!(df, [t, id])
+    end
+
+    # Extract schema and terms
     dfschema = StatsModels.schema(df, hint_for_categorical(df))
-    N, T = length(unique(df[!, id])), length(unique(df[!, t]))
-    (issorted(df, [t, id]) && nrow(df) == N * T) ||
-        throw(ArgumentError("Only balanced panel is supported for now"))
     response_term, slope_terms, endog_term, exog_terms = parse_endog(formula)
+
+    # Create observation index
+    id_values = unique(df[!, id])
+    t_values = unique(df[!, t])
+    obs_index = create_observation_index(df, id, t)
+
+    # Create exclusion matrix
+    exclmat = create_exclusion_matrix(id_values, exclude_pairs)
+
+    # Extract response variable (q)
     q = modelcols(apply_schema(response_term, dfschema, GIVModel), df)
-    qmat = reshape(q, N, T)
+
+    # Extract endogenous variable (p)
     p = modelcols(apply_schema(endog_term, dfschema, GIVModel), df)
-    pmat = reshape(p, N, T)
-    if norm(var(pmat; dims = 1)) > eps(eltype(pmat))
+
+    # Check if p is constant across entities for each time period
+    if !verify_constant_price_by_time(p, obs_index, t_values)
         throw(ArgumentError("Price has to be constant across entities"))
     end
-    # form a dictionary mapping from id to ind:
-    idvec = df[1:N, id]
-    id2ind = Dict(idvec[i] => i for i in 1:N)
-    exclmat = zeros(Bool, N, N)
-    for (id1, id2vec) in exclude_pairs
-        for id2 in id2vec
-            exclmat[id2ind[id1], id2ind[id2]] = true
-            exclmat[id2ind[id2], id2ind[id1]] = true
-        end
-    end
-    exclmat = BitArray(exclmat)
 
+    # Generate slope terms
     slope_terms = MatrixTerm(apply_schema(slope_terms, FullRank(dfschema), GIVModel))
     C = modelcols(slope_terms, df)
-
     Nmom = size(C, 2)
-    Cts = reshape(C, N, T, Nmom)
-    if all(x -> iszero(x) || isone(x), Cts)
-        Cts = BitArray(Cts)
-    end
-    Cpts = Cts .* pmat
+
+    # Create C*p (coefficient * price)
+    Cp = C .* p
+
+    # Generate exogenous terms
     exog_terms = apply_schema(exog_terms, FullRank(dfschema), GIVModel) |> MatrixTerm
     η = modelcols(exog_terms, df)
-    ηts = reshape(η, N, T, size(η, 2))
 
     S = df[!, weight]
-    Smat = reshape(S, N, T)
 
-    if !quiet &&
-       algorithm ∈ [:scalar_search, :debiased_ols] &&
-       any(>(eps(eltype(qmat))), sum(qmat .* Smat; dims = 1) .^ 2)
-        @warn ("Adding-up constraints not satisfied. `up` and `scalar_search` algorithms may be biased.")
+
+    return q, p, C, Cp, η, S, exclmat, obs_index
+end
+
+# Helper function to verify price is constant within each time period
+function verify_constant_price_by_time(p, obs_index, t_values)
+    for t in 1:obs_index.T
+        start_idx = obs_index.start_indices[t]
+        end_idx = obs_index.end_indices[t]
+
+        # Skip empty time periods
+        if start_idx == 0 || end_idx == 0 || start_idx == end_idx
+            continue
+        end
+
+        # Check if p is constant in this time period
+        p_value = p[start_idx]
+        for idx in (start_idx+1):end_idx
+            if abs(p[idx] - p_value) > eps(eltype(p))
+                return false
+            end
+        end
     end
 
-    return qmat, pmat, Cts, Cpts, ηts, Smat, exclmat
+    return true
 end
 
 parse_guess(formula, guess::Union{Nothing,Vector}, ::Val) = guess
@@ -369,61 +386,142 @@ function create_coef_dataframe(df, formula, coef, coefname, id)
     return categories
 end
 
-"""
-    predict_endog(m::GIVModel; <keyword arguments>)
+# """
+#     predict_endog(m::GIVModel; <keyword arguments>)
 
-Predict the endogenous variable based on the estimated GIV model.
+# Predict the endogenous variable based on the estimated GIV model.
 
-# Arguments
+# # Arguments
 
-- `m::GIVModel`: The estimated GIV model.
-- `df::DataFrame`: The dataframe to predict the endogenous variable. 
-    It uses the saved dataframe in `m` by default. A different dataframe can be used for prediction to construct counterfactuals.
+# - `m::GIVModel`: The estimated GIV model.
+# - `df::DataFrame`: The dataframe to predict the endogenous variable. 
+#     It uses the saved dataframe in `m` by default. A different dataframe can be used for prediction to construct counterfactuals.
 
-## Keyword Arguments
-- `coef::Vector{Float64}`: The estimated coefficients. 
-    It uses the coefficients in `m` by default. A different set of coefficients can be
-    used to construct counterfactuals.
-- `factor_coef::Vector{Float64}`: The estimated factor coefficients.
-    It uses the factor coefficients in `m` by default. A different set of factor coefficients can be
-    used to construct counterfactuals.
-- `residual::Symbol`: The name of the residual column in the dataframe. 
-    By default it uses the estimated residual; different residuals can be used to construct counterfactuals.
-- `formula::FormulaTerm`: The formula used to estimate the model.
-- `id::Symbol`: The name of the entity identifier.
-- `t::Symbol`: The name of the time identifier.
-- `weight::Symbol`: The name of the weight variable.
-"""
-function predict_endog(
-    m::GIVModel,
-    df = m.df;
-    coef = m.coef,
-    factor_coef = m.factor_coef,
-    residual = Symbol(m.responsename, "_residual"),
-    formula = m.formula,
-    id = m.idvar,
-    t = m.tvar,
-    weight = m.weightvar,
-    quiet = false,
-)
-    if isnothing(df)
-        throw(ArgumentError("DataFrame not saved. Rerun the model with `savedf = true`"))
+# ## Keyword Arguments
+# - `coef::Vector{Float64}`: The estimated coefficients. 
+#     It uses the coefficients in `m` by default. A different set of coefficients can be
+#     used to construct counterfactuals.
+# - `factor_coef::Vector{Float64}`: The estimated factor coefficients.
+#     It uses the factor coefficients in `m` by default. A different set of factor coefficients can be
+#     used to construct counterfactuals.
+# - `residual::Symbol`: The name of the residual column in the dataframe. 
+#     By default it uses the estimated residual; different residuals can be used to construct counterfactuals.
+# - `formula::FormulaTerm`: The formula used to estimate the model.
+# - `id::Symbol`: The name of the entity identifier.
+# - `t::Symbol`: The name of the time identifier.
+# - `weight::Symbol`: The name of the weight variable.
+# """
+# function predict_endog(
+#     m::GIVModel,
+#     df = m.df;
+#     coef = m.coef,
+#     factor_coef = m.factor_coef,
+#     residual = Symbol(m.responsename, "_residual"),
+#     formula = m.formula,
+#     id = m.idvar,
+#     t = m.tvar,
+#     weight = m.weightvar,
+#     quiet = false,
+# )
+#     if isnothing(df)
+#         throw(ArgumentError("DataFrame not saved. Rerun the model with `savedf = true`"))
+#     end
+#     # add residual to the rhs
+#     formula = FormulaTerm(formula.lhs, tuple(eachterm(formula.rhs)..., Term(residual)))
+#     factor_coef = [factor_coef; one(eltype(factor_coef))]
+#     df = preprocess_dataframe(df, formula, id, t, weight)
+#     matricies = generate_matrices(df, formula, id, t, weight)
+#     qmat, pmat, Cts, Cpts, ηts, Smat = matricies
+#     N, T, Nmom = size(Cts)
+#     mkc_err = sum(qmat .* Smat; dims = 1) .^ 2
+#     if !quiet && any(>(eps(eltype(qmat))), mkc_err)
+#         @warn ("Adding-up constraints not satisfied. Interpret the results with caution.")
+#     end
+#     aggcoef = solve_aggregate_elasticity(coef, Cts, Smat)
+#     λη = reshape(ηts, N * T, :) * factor_coef
+#     netshock = reshape(λη, N, T)
+#     shockS = sum(netshock .* Smat; dims = 1) |> vec
+#     pvec = shockS ./ aggcoef
+#     return pvec
+# end
+
+function create_exclusion_matrix(id_values, exclude_pairs)
+    # Create mapping from id to index
+    id2ind = Dict(id_values[i] => i for i in 1:length(id_values))
+    N = length(id_values)
+    # Initialize exclusion matrix
+    exclmat = zeros(Bool, N, N)
+
+    # Fill in exclusions based on provided pairs
+    for (id1, id2vec) in exclude_pairs
+        i = id2ind[id1]
+        for id2 in id2vec
+            j = id2ind[id2]
+            exclmat[i, j] = true
+            exclmat[j, i] = true  # Make it symmetric
+        end
     end
-    # add residual to the rhs
-    formula = FormulaTerm(formula.lhs, tuple(eachterm(formula.rhs)..., Term(residual)))
-    factor_coef = [factor_coef; one(eltype(factor_coef))]
-    df = preprocess_dataframe(df, formula, id, t, weight)
-    matricies = generate_matrices(df, formula, id, t, weight)
-    qmat, pmat, Cts, Cpts, ηts, Smat = matricies
-    N, T, Nmom = size(Cts)
-    mkc_err = sum(qmat .* Smat; dims = 1) .^ 2
-    if !quiet && any(>(eps(eltype(qmat))), mkc_err)
-        @warn ("Adding-up constraints not satisfied. Interpret the results with caution.")
+
+    return BitArray(exclmat)
+end
+
+"""
+Check if the market clearing condition (adding-up constraint) is satisfied for each time period.
+
+Returns true if the constraint is violated in any period.
+"""
+function check_market_clearing(q, S, obs_index)
+    for t in 1:obs_index.T
+        start_idx = obs_index.start_indices[t]
+        end_idx = obs_index.end_indices[t]
+
+        # Skip empty time periods
+        if start_idx == 0 || end_idx == 0
+            continue
+        end
+
+        # Calculate the sum of q*S for this time period
+        weighted_sum = 0.0
+        for idx in start_idx:end_idx
+            weighted_sum += q[idx] * S[idx]
+        end
+
+        # Check if sum exceeds tolerance
+        if weighted_sum^2 > eps(eltype(q))
+            return false  # Constraint violated
+        end
     end
-    aggcoef = solve_aggregate_elasticity(coef, Cts, Smat)
-    λη = reshape(ηts, N * T, :) * factor_coef
-    netshock = reshape(λη, N, T)
-    shockS = sum(netshock .* Smat; dims = 1) |> vec
-    pvec = shockS ./ aggcoef
-    return pvec
+
+    return true  # No violations found
+end
+
+"""
+Residualize observation vectors against control variables η.
+
+This function removes the part of each observation vector that can be explained
+by the control variables η.
+
+Parameters:
+- q: The response vector
+- Cp: The coefficient-price interaction matrix
+- η: The control variables matrix
+- Nmom: Number of moment conditions
+
+Returns:
+- uq: Residualized response vector
+- uCp: Residualized coefficient-price interaction matrix
+- λq_endog: Loadings of q on η
+- λCp: Loadings of Cp on η
+"""
+function residualize_observations(q, Cp, η)
+    # Create Cholesky decomposition for efficiency
+    cholη = cholesky(η' * η)
+
+    # Residualize q against η
+    uq, λq_endog = residualize_on_η(q, η, cholη)
+
+    # Residualize Cp against η
+    uCp, λCp = residualize_on_η(Cp, η, cholη)
+
+    return uq, uCp, λq_endog, λCp
 end
