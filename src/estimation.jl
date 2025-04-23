@@ -49,7 +49,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv_legacy
     # Calculate variance by entity
     σu²vec = calculate_entity_variance(u, obs_index)
     precision = 1 ./ σu²vec
-    precision = precision ./ sum(precision)
+    # precision = precision ./ sum(precision)
 
     # Initialize error and weightsum
     err = zeros(eltype(ζ), Nmom, T)
@@ -82,9 +82,9 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv_legacy
                     end
 
                     err[imom, t] += u[idx_i] * u[idx_j] * weight_i * S[idx_j]
+                    weightsum[imom, t] += weight_i * S[idx_j]
                 end
 
-                weightsum[imom, t] += precision[i]
             end
 
             # Second loop: iterate over j, then i < j
@@ -107,24 +107,22 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv_legacy
                     end
 
                     err[imom, t] += u[idx_i] * u[idx_j] * weight_j * S[idx_i]
+                    weightsum[imom, t] += weight_j * S[idx_i]
                 end
 
-                weightsum[imom, t] += precision[j]
             end
         end
     end
 
-    # Normalize
-    # momweight = sum(abs.(weightsum); dims=2)
-    # momweight = momweight ./ sum(momweight)
-    # err ./= momweight
+    momweight = sum(abs.(weightsum); dims=2)
+    momweight = momweight ./ sum(momweight)
+    err ./= momweight
 
     return err
 end
 
 
 function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
-
     Nm = length(ζ)
     T = obs_index.T
     err = zeros(eltype(ζ), Nm, T)
@@ -133,13 +131,19 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
     u = q .+ Cp * ζ
     σu²vec = calculate_entity_variance(u, obs_index)
     prec = inv.(σu²vec)
-    prec ./= sum(prec)
+    # prec ./= sum(prec)
 
+    weightsum = zeros(eltype(ζ), Nm, T)
     # 1️⃣ fast O(N) pass
-    fast_pass!(err, u, C, S, prec, obs_index)
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index)
 
     # 2️⃣ subtract excluded pairs
-    deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_index)
+
+    # Normalize by the weightsum
+    momweight = sum(abs.(weightsum); dims=2)
+    momweight = momweight ./ sum(momweight)
+    err ./= momweight
 
     return err
 end
@@ -147,9 +151,10 @@ end
 # ----------------------------------------------------------------------
 #  FAST  O(N)  PASS   (fills only `err`)
 # ----------------------------------------------------------------------
-function fast_pass!(err, u, C, S, prec, obs_index)
+function fast_pass!(weightsum, err, u, C, S, prec, obs_index)
     Nm = size(err, 1)
     T = obs_index.T
+
 
     @inbounds for t in 1:T
         r = obs_index.start_indices[t]:obs_index.end_indices[t]
@@ -160,6 +165,7 @@ function fast_pass!(err, u, C, S, prec, obs_index)
         prec_t = prec[ids_t]
 
         b_total = sum(S_t .* u_t)                 # ∑ b_i   (no mask!)
+        S_total = sum(S_t)                        # ∑ S_i   (for weightsum)
 
         for m in 1:Nm
             C_t = @view C[r, m]
@@ -168,21 +174,32 @@ function fast_pass!(err, u, C, S, prec, obs_index)
                 continue
             end
 
+            # First compute error values using fast O(N) formula
             a_vec = C_t[nz] .* prec_t[nz] .* u_t[nz]           # a_i
             diag_ab = a_vec .* (S_t[nz] .* u_t[nz])              # a_i b_i
-
             err[m, t] = (sum(a_vec) * b_total - sum(diag_ab))
+
+            # Calculate weightsum using a similar O(N) optimization:
+            # For all pairs (i,j) where i≠j:
+            # sum(weight_i * S_j) = sum(weight_i) * sum(S_j) - sum(weight_i * S_i)
+            weight_vec = C_t[nz] .* prec_t[nz]                 # c_i * prec_i
+            sum_weight = sum(weight_vec)
+            diag_ws = weight_vec .* S_t[nz]                   # weight_i * S_i (diagonal)
+
+            # Compute weightsum in O(N) time
+            weightsum[m, t] = sum_weight * S_total - sum(diag_ws)
         end
     end
-    return nothing
+
+    # Return weightsum for normalization
+    return weightsum
 end
 
 
 # ----------------------------------------------------------------------
-#  SECOND PASS  – deduct excluded (err only, weightsum gone)
+#  SECOND PASS  – deduct excluded pairs from err and weightsum
 # ----------------------------------------------------------------------
-function deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
-
+function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_index)
     Nm = size(err, 1)
     T = obs_index.T
 
@@ -213,7 +230,9 @@ function deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
                         continue
                     end
 
+                    # Deduct contribution for excluded pairs
                     err[m, t] -= ui * u_t[idx_j] * wi * S_t[idx_j]
+                    weightsum[m, t] -= wi * S_t[idx_j]
                 end
             end
 
@@ -234,7 +253,9 @@ function deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
                         continue
                     end
 
+                    # Deduct contribution for excluded pairs
                     err[m, t] -= u_t[idx_i] * uj * wj * S_t[idx_i]
+                    weightsum[m, t] -= wj * S_t[idx_i]
                 end
             end
         end
