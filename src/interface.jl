@@ -76,7 +76,7 @@ function giv(
     t::Symbol,
     weight::Union{Symbol,Nothing} = nothing;
     guess = nothing,
-    exclude_pairs = Pair[],
+    exclude_pairs=Dict{Int,Vector{Int}}(),
     algorithm=:iv,
     solver_options = (;),
     quiet = false,

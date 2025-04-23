@@ -15,7 +15,7 @@ struct GIVModel <: StatisticalModel
     idvar::Symbol
     tvar::Symbol
     weightvar::Symbol
-    exclude_pairs::Vector{Pair}
+    exclude_pairs::Dict
 
     coefdf::DataFrame
     df::Union{DataFrame,Nothing}
