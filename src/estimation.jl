@@ -171,7 +171,7 @@ function fast_pass!(err, u, C, S, prec, obs_index)
             a_vec = C_t[nz] .* prec_t[nz] .* u_t[nz]           # a_i
             diag_ab = a_vec .* (S_t[nz] .* u_t[nz])              # a_i b_i
 
-            err[m, t] = 2 * (sum(a_vec) * b_total - sum(diag_ab))
+            err[m, t] = (sum(a_vec) * b_total - sum(diag_ab))
         end
     end
     return nothing
@@ -209,7 +209,7 @@ function deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
 
                 for idx_j in (idx_i+1):length(r)
                     j = ids_t[idx_j]
-                    if exclmat[i, j]
+                    if !exclmat[i, j]
                         continue
                     end
 
@@ -230,7 +230,7 @@ function deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
 
                 for idx_i in 1:(idx_j-1)
                     i = ids_t[idx_i]
-                    if exclmat[i, j]
+                    if !exclmat[i, j]
                         continue
                     end
 

@@ -33,7 +33,7 @@ using GIV: moment_conditions, ObservationIndex
 
     # Test case 1: No exclusions
     @testset "No exclusions" begin
-        exclmat = falses(N, N)
+        exclmat = BitArray(zeros(N, N))
 
         for _ in 1:3
             ζ = randn(Nmom)
