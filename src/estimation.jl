@@ -9,7 +9,7 @@ function estimate_giv(
     guess = nothing,
     quiet = false,
     solver_options = (;),
-) where {A<:Union{Val{:iv},Val{:debiased_ols}}}
+) where {A<:Union{Val{:iv},Val{:iv_legacy},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
             @info "Initial guess is not provided. Using OLS estimate as initial guess."
@@ -39,7 +39,7 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv_legacy})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -115,12 +115,133 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
     end
 
     # Normalize
-    momweight = sum(abs.(weightsum); dims = 2)
-    momweight = momweight ./ sum(momweight)
-    err ./= momweight
+    # momweight = sum(abs.(weightsum); dims=2)
+    # momweight = momweight ./ sum(momweight)
+    # err ./= momweight
 
     return err
 end
+
+
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
+
+    Nm = length(ζ)
+    T = obs_index.T
+    err = zeros(eltype(ζ), Nm, T)
+
+    # residuals and entity-level precision ------------------------------
+    u = q .+ Cp * ζ
+    σu²vec = calculate_entity_variance(u, obs_index)
+    prec = inv.(σu²vec)
+    prec ./= sum(prec)
+
+    # 1️⃣ fast O(N) pass
+    fast_pass!(err, u, C, S, prec, obs_index)
+
+    # 2️⃣ subtract excluded pairs
+    deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
+
+    return err
+end
+
+# ----------------------------------------------------------------------
+#  FAST  O(N)  PASS   (fills only `err`)
+# ----------------------------------------------------------------------
+function fast_pass!(err, u, C, S, prec, obs_index)
+    Nm = size(err, 1)
+    T = obs_index.T
+
+    @inbounds for t in 1:T
+        r = obs_index.start_indices[t]:obs_index.end_indices[t]
+        ids_t = obs_index.ids[r]
+
+        u_t = @view u[r]
+        S_t = @view S[r]
+        prec_t = prec[ids_t]
+
+        b_total = sum(S_t .* u_t)                 # ∑ b_i   (no mask!)
+
+        for m in 1:Nm
+            C_t = @view C[r, m]
+            nz = C_t .!= 0
+            if !any(nz)
+                continue
+            end
+
+            a_vec = C_t[nz] .* prec_t[nz] .* u_t[nz]           # a_i
+            diag_ab = a_vec .* (S_t[nz] .* u_t[nz])              # a_i b_i
+
+            err[m, t] = 2 * (sum(a_vec) * b_total - sum(diag_ab))
+        end
+    end
+    return nothing
+end
+
+
+# ----------------------------------------------------------------------
+#  SECOND PASS  – deduct excluded (err only, weightsum gone)
+# ----------------------------------------------------------------------
+function deduct_excluded_pairs!(err, C, S, u, prec, exclmat, obs_index)
+
+    Nm = size(err, 1)
+    T = obs_index.T
+
+    @inbounds for t in 1:T
+        r = obs_index.start_indices[t]:obs_index.end_indices[t]
+        ids_t = obs_index.ids[r]
+
+        u_t = @view u[r]
+        S_t = @view S[r]
+
+        for m in 1:Nm
+            C_t = @view C[r, m]
+
+            # ---------- i before j ------------------------------------
+            for idx_i in eachindex(r)
+                Ci = C_t[idx_i]
+                if Ci == 0
+                    continue
+                end     # rows with C == 0 never contribute
+
+                i = ids_t[idx_i]
+                wi = Ci * prec[i]
+                ui = u_t[idx_i]
+
+                for idx_j in (idx_i+1):length(r)
+                    j = ids_t[idx_j]
+                    if exclmat[i, j]
+                        continue
+                    end
+
+                    err[m, t] -= ui * u_t[idx_j] * wi * S_t[idx_j]
+                end
+            end
+
+            # ---------- j after i -------------------------------------
+            for idx_j in eachindex(r)
+                Cj = C_t[idx_j]
+                if Cj == 0
+                    continue
+                end
+
+                j = ids_t[idx_j]
+                wj = Cj * prec[j]
+                uj = u_t[idx_j]
+
+                for idx_i in 1:(idx_j-1)
+                    i = ids_t[idx_i]
+                    if exclmat[i, j]
+                        continue
+                    end
+
+                    err[m, t] -= u_t[idx_i] * uj * wj * S_t[idx_i]
+                end
+            end
+        end
+    end
+    return nothing
+end
+
 
 function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, ::Val{:debiased_ols})
     Nmom = length(ζ)
