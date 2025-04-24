@@ -1,4 +1,3 @@
-
 @with_kw struct SimParam{TD<:Distribution{Univariate}}
     @deftype Float64
     γ = 0.5
@@ -19,6 +18,7 @@
     σp = 2.0
     σζ = 1.0
     ζs = 1.0
+    missingperc = 0.0 # percentage of missing values in the data
 end
 
 """
@@ -62,15 +62,15 @@ function solve_S_for_hhi(h, N)
 end
 
 @with_kw struct SimData{T}
-    S::Matrix{T}
-    u::Matrix{T}
-    m::Matrix{T}
-    C::Matrix{T}
-    Λ::Matrix{T}
-    η::Matrix{T}
-    p::Matrix{T}
-    ζ::Vector{T}
-    q::Matrix{T}
+    S::Matrix{Union{T,Missing}}
+    u::Matrix{Union{T,Missing}}
+    m::Matrix{Union{T,Missing}}
+    C::Matrix{Union{T,Missing}}
+    Λ::Matrix{Union{T,Missing}}
+    η::Matrix{Union{T,Missing}}
+    p::Matrix{Union{T,Missing}}
+    ζ::Vector{Union{T,Missing}}
+    q::Matrix{Union{T,Missing}}
 end
 
 function DataFrame(simdata::SimData)
@@ -169,7 +169,23 @@ function SimModel(;kwargs...)
     p = reshape(netshock * M, 1, T) |> Matrix
     q = shock - ζ .* p
     
-    S = constS * ones(1, T)
+    # Convert all matrices to allow missing values
+    S = allowmissing(constS * ones(1, T))
+    u = allowmissing(u)
+    m = allowmissing(m)
+    C = allowmissing(C)
+    Λ = allowmissing(Λ)
+    η = allowmissing(η)
+    p = allowmissing(p)
+    ζ = allowmissing(ζ)
+    q = allowmissing(q)
+
+    # Introduce missingness
+    if missingperc > 0
+        missing_mask = rand(N, T) .< missingperc
+        q[missing_mask] .= missing
+    end
+
     simdata = SimData(S, u, m, C, Λ, η, p, ζ, q)
 
     model = SimModel(param, simdata)

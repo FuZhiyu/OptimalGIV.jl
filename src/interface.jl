@@ -220,7 +220,8 @@ function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
 
     # check data compatibility
     allvars = StatsModels.termvars(formula)
-    df = select(df, unique([id, t, weight, allvars...])) |> disallowmissing!
+    df = select(df, unique([id, t, weight, allvars...]))
+    dropmissing!(df)
 
     if any(nonunique(df, [id, t]))
         throw(ArgumentError("Observations are not uniquely identified by `id` and `t`"))
