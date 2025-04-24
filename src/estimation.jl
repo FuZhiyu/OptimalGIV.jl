@@ -155,8 +155,8 @@ function fast_pass!(weightsum, err, u, C, S, prec, obs_index)
     Nm = size(err, 1)
     T = obs_index.T
 
-
-    @inbounds for t in 1:T
+    # Parallelize over time periods
+    @threads for t in 1:T
         r = obs_index.start_indices[t]:obs_index.end_indices[t]
         ids_t = obs_index.ids[r]
 
@@ -164,34 +164,49 @@ function fast_pass!(weightsum, err, u, C, S, prec, obs_index)
         S_t = @view S[r]
         prec_t = prec[ids_t]
 
-        b_total = sum(S_t .* u_t)                 # ∑ b_i   (no mask!)
-        S_total = sum(S_t)                        # ∑ S_i   (for weightsum)
+        # Pre-compute these values once per time period
+        b_total = sum(S_t .* u_t)
+        S_total = sum(S_t)
+
+        # Local buffer for non-zero indices to avoid reallocations
+        nz_buffer = BitVector(undef, length(r))
 
         for m in 1:Nm
             C_t = @view C[r, m]
-            nz = C_t .!= 0
-            if !any(nz)
+
+            # Reuse buffer for non-zero indices
+            @inbounds for i in eachindex(C_t)
+                nz_buffer[i] = C_t[i] != 0
+            end
+
+            # Skip if all zeros
+            if !any(nz_buffer)
                 continue
             end
 
-            # First compute error values using fast O(N) formula
-            a_vec = C_t[nz] .* prec_t[nz] .* u_t[nz]           # a_i
-            diag_ab = a_vec .* (S_t[nz] .* u_t[nz])              # a_i b_i
-            err[m, t] = (sum(a_vec) * b_total - sum(diag_ab))
+            # Use @inbounds for inner loop operations
+            @inbounds begin
+                # Compute these vectors once per moment condition
+                weight_vec = C_t[nz_buffer] .* prec_t[nz_buffer]
+                Su_nz = S_t[nz_buffer] .* u_t[nz_buffer]
 
-            # Calculate weightsum using a similar O(N) optimization:
-            # For all pairs (i,j) where i≠j:
-            # sum(weight_i * S_j) = sum(weight_i) * sum(S_j) - sum(weight_i * S_i)
-            weight_vec = C_t[nz] .* prec_t[nz]                 # c_i * prec_i
-            sum_weight = sum(weight_vec)
-            diag_ws = weight_vec .* S_t[nz]                   # weight_i * S_i (diagonal)
+                # First compute error values using fast O(N) formula
+                a_vec = weight_vec .* u_t[nz_buffer]
+                diag_ab = a_vec .* Su_nz
 
-            # Compute weightsum in O(N) time
-            weightsum[m, t] = sum_weight * S_total - sum(diag_ws)
+                # Fused operations for better performance
+                err[m, t] = sum(a_vec) * b_total - sum(diag_ab)
+
+                # Calculate weightsum
+                sum_weight = sum(weight_vec)
+                diag_ws = weight_vec .* S_t[nz_buffer]
+
+                # Compute weightsum in O(N) time
+                weightsum[m, t] = sum_weight * S_total - sum(diag_ws)
+            end
         end
     end
 
-    # Return weightsum for normalization
     return weightsum
 end
 
@@ -200,66 +215,68 @@ end
 #  SECOND PASS  – deduct excluded pairs from err and weightsum
 # ----------------------------------------------------------------------
 function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_index)
-    Nm = size(err, 1)
+    Nmom = size(err, 1)
     T = obs_index.T
 
-    @inbounds for t in 1:T
-        r = obs_index.start_indices[t]:obs_index.end_indices[t]
-        ids_t = obs_index.ids[r]
+    # Loop through time periods
+    @threads for t in 1:T
+        # Get observations range for this time period
+        start_idx = obs_index.start_indices[t]
+        end_idx = obs_index.end_indices[t]
 
-        u_t = @view u[r]
-        S_t = @view S[r]
+        for imom in 1:Nmom
+            # First loop: iterate over i, then j > i
+            for idx_i in start_idx:end_idx
+                i = obs_index.ids[idx_i]
 
-        for m in 1:Nm
-            C_t = @view C[r, m]
-
-            # ---------- i before j ------------------------------------
-            for idx_i in eachindex(r)
-                Ci = C_t[idx_i]
-                if Ci == 0
+                # Skip if C is zero
+                if iszero(C[idx_i, imom])
                     continue
-                end     # rows with C == 0 never contribute
+                end
 
-                i = ids_t[idx_i]
-                wi = Ci * prec[i]
-                ui = u_t[idx_i]
+                weight_i = C[idx_i, imom] * prec[i]
 
-                for idx_j in (idx_i+1):length(r)
-                    j = ids_t[idx_j]
+                for idx_j in (idx_i+1):end_idx
+                    j = obs_index.ids[idx_j]
+
+                    # We only want to deduct excluded pairs
                     if !exclmat[i, j]
                         continue
                     end
 
                     # Deduct contribution for excluded pairs
-                    err[m, t] -= ui * u_t[idx_j] * wi * S_t[idx_j]
-                    weightsum[m, t] -= wi * S_t[idx_j]
+                    err[imom, t] -= u[idx_i] * u[idx_j] * weight_i * S[idx_j]
+                    weightsum[imom, t] -= weight_i * S[idx_j]
                 end
             end
 
-            # ---------- j after i -------------------------------------
-            for idx_j in eachindex(r)
-                Cj = C_t[idx_j]
-                if Cj == 0
+            # Second loop: iterate over j, then i < j
+            for idx_j in start_idx:end_idx
+                j = obs_index.ids[idx_j]
+
+                # Skip if C is zero
+                if iszero(C[idx_j, imom])
                     continue
                 end
 
-                j = ids_t[idx_j]
-                wj = Cj * prec[j]
-                uj = u_t[idx_j]
+                weight_j = C[idx_j, imom] * prec[j]
 
-                for idx_i in 1:(idx_j-1)
-                    i = ids_t[idx_i]
+                for idx_i in start_idx:(idx_j-1)
+                    i = obs_index.ids[idx_i]
+
+                    # We only want to deduct excluded pairs
                     if !exclmat[i, j]
                         continue
                     end
 
                     # Deduct contribution for excluded pairs
-                    err[m, t] -= u_t[idx_i] * uj * wj * S_t[idx_i]
-                    weightsum[m, t] -= wj * S_t[idx_i]
+                    err[imom, t] -= u[idx_i] * u[idx_j] * weight_j * S[idx_i]
+                    weightsum[imom, t] -= weight_j * S[idx_i]
                 end
             end
         end
     end
+
     return nothing
 end
 
