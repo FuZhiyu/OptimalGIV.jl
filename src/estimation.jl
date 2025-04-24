@@ -6,9 +6,9 @@ function estimate_giv(
     exclmat,
     obs_index,
     ::A;
-    guess = nothing,
-    quiet = false,
-    solver_options = (;),
+    guess=nothing,
+    quiet=false,
+    solver_options=(;),
 ) where {A<:Union{Val{:iv},Val{:iv_legacy},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -287,7 +287,7 @@ function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, ::Val{:debiased_o
     u = vec(qmat) + reshape(Cpts, N * T, Nmom) * ζ
     umat = reshape(u, N, T)
 
-    σu²vec = [var(umat[i, :]; mean = zero(eltype(umat))) for i in 1:N]
+    σu²vec = [var(umat[i, :]; mean=zero(eltype(umat))) for i in 1:N]
     precision = 1 ./ σu²vec
     precision = precision ./ sum(precision)
     err = zeros(eltype(ζ), Nmom, T)
@@ -307,20 +307,20 @@ function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, ::Val{:debiased_o
             weightsum[imom, t] += weight
         end
     end
-    momweight = sum(abs.(weightsum); dims = 2)
+    momweight = sum(abs.(weightsum); dims=2)
     momweight = momweight ./ sum(momweight)
     err ./= momweight # equal weight moment conditions for numerical stability
     return err
 end
 
-mean_moment_conditions(ζ, args...) = vec(mean(moment_conditions(ζ, args...); dims = 2))
+mean_moment_conditions(ζ, args...) = vec(mean(moment_conditions(ζ, args...); dims=2))
 
-function estimate_loading_on_η(x, η, cholη = cholesky(η' * η))
+function estimate_loading_on_η(x, η, cholη=cholesky(η' * η))
     λ = cholη \ (η' * x)
     return λ
 end
 
-function residualize_on_η(x, η, cholη = cholesky(η' * η))
+function residualize_on_η(x, η, cholη=cholesky(η' * η))
     λ = estimate_loading_on_η(x, η, cholη)
     return x - η * λ, λ
 end
