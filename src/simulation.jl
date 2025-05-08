@@ -13,12 +13,10 @@
     varᵤshare = NC == 0 && K == 0 ? 1.0 : 0.2
     constS::Vector{Float64} = solve_S_for_hhi(h, N)
     σᵤcurv = 0.1
-    usupplyshare = 0.2
     σᵤvec::Vector{Float64} = specify_σᵢ(constS, σᵤcurv, 1.0, usupplyshare)
     DIST::TD = isinf(ν) ? Normal(0, 1.0) : TDist(ν) * sqrt((ν-2)/ν) * 1.0
     σp = 2.0
     σζ = 1.0
-    ζs = 1.0
 end
 
 """
@@ -86,7 +84,7 @@ function DataFrame(simdata::SimData)
     )
     dfc = DataFrame(repeat(simdata.C', inner = (N, 1)), ["η$i" for i in 1:size(simdata.C, 1)])
     df = hcat(df, dfc)
-    df.absS = abs.(df.S)
+    df.S = abs.(df.S)
     return df
 end
 
@@ -116,23 +114,9 @@ function SimModel(;kwargs...)
     param = SimParam(;kwargs...)
     @unpack_SimParam param
 
-    
     ζ = rand(Normal(0, σζ), N)
-    ζ .-= sum(ζ .* abs.(constS))
+    ζ .-= sum(ζ .* constS)
 
-    supplyflag = ζs > 0 || usupplyshare > 0
-    if supplyflag
-        ζS = 1 / M
-        ζD = ζS - ζs # the elasticity from the demand side
-        @assert ζD > 0
-        ζ .+= ζD
-        ζ = [ζ; ζs]
-        N = N + 1
-        constS = [constS; -1.0]
-    else
-        ζ .+= 1 / M
-    end
-    absS = abs.(constS)        
 
     u = rand(DIST, N, T) .* σᵤvec
     m = rand(N, NC)
@@ -147,7 +131,7 @@ function SimModel(;kwargs...)
     
     if NC > 0 || K > 0
         commonshocks = m * C + Λ * η
-        currentratio = var(absS' * u) / var(absS' * commonshocks)
+        currentratio = var(constS' * u) / var(constS' * commonshocks)
         scaleidio = sqrt(varᵤshare / (currentratio * (1-varᵤshare)))
         u = u * scaleidio
         σᵤvec .= σᵤvec * scaleidio
@@ -157,7 +141,7 @@ function SimModel(;kwargs...)
     shock = u + m * C + Λ * η
 
 
-    netshock = absS' * shock
+    netshock = constS' * shock
     netshockscale = sqrt(var(netshock * M, mean = zero(eltype(netshock))) / σp^2)
     σᵤvec .= σᵤvec / netshockscale
     netshock = netshock / netshockscale
@@ -165,7 +149,7 @@ function SimModel(;kwargs...)
     m ./= netshockscale
     Λ ./= netshockscale
     shock = u + m * C + Λ * η
-    netshock = absS' * shock    
+    netshock = constS' * shock    
     p = reshape(netshock * M, 1, T) |> Matrix
     q = shock - ζ .* p
     
