@@ -40,7 +40,7 @@ function monte_carlo(Nsims; seed = nothing, kwargs...)
     factor_biasvec = Vector{Union{Vector{Float64},Missing}}(undef, Nsims)
     factor_coveredvec = Vector{Union{Vector{Bool},Missing}}(undef, Nsims)
     for i in 1:Nsims
-        try 
+        # try 
             tup = monte_carlo(; kwargs...)
             bias = tup[1]
             covered = tup[2]
@@ -55,12 +55,12 @@ function monte_carlo(Nsims; seed = nothing, kwargs...)
                 factor_biasvec[i] = missing
                 factor_coveredvec[i] = missing
             end
-        catch
-            biasvec[i] = missing
-            coveredvec[i] = missing
-            factor_biasvec[i] = missing
-            factor_coveredvec[i] = missing
-        end
+        # catch
+        #     biasvec[i] = missing
+        #     coveredvec[i] = missing
+        #     factor_biasvec[i] = missing
+        #     factor_coveredvec[i] = missing
+        # end
     end
     biasvec = filter(!ismissing, biasvec)
     coveredvec = filter(!ismissing, coveredvec)
@@ -88,19 +88,22 @@ givmodel = giv(
 #==============  homogeneous elasticity ==============#
 simparams = (;T = 100, N = 10, varᵤshare = 1, usupplyshare = 0.0, h = 0.2, σᵤcurv = 0.1, ζs = 0.0, NC = 0, M = 0.5, σζ = 0.0)
 estparams = (;
-    guess = Dict("Aggregate" => 2.0),
-    algorithm = :scalar_search,
+    guess=Dict("Constant" => 2.0),
+    algorithm=:iv_legacy,
     quiet = true,
+    return_vcov=false,
 )
 
-bias, covered = monte_carlo(400; seed = 1,
+# bias, covered = monte_carlo(400; seed = 1,
+bias, covered = monte_carlo(400;
     formula = @formula(q + endog(p) ~ 0),
     simulation_parameters = simparams,
     estimation_parameters = estparams
 )
 @test mean(mean.(bias)) < 0.05
-@test mean(mean.(covered)) ≈ 0.95 atol = 0.01
 
+
+@test mean(mean.(covered)) ≈ 0.95 atol = 0.01
 #============== assuming heterogeneous elasticity ==============#
 simparams = (;T = 100, N = 10, varᵤshare = 1, usupplyshare = 0.0, h = 0.2, σᵤcurv = 0.1, ζs = 0.0, NC = 0, M = 0.5)
 estparams = (;
