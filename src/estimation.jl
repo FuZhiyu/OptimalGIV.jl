@@ -8,6 +8,7 @@ function estimate_giv(
     ::A;
     guess=nothing,
     quiet=false,
+    fullmarket=true,
     solver_options=(;),
 ) where {A<:Union{Val{:iv},Val{:iv_legacy},Val{:debiased_ols}}}
     if isnothing(guess)
@@ -18,13 +19,13 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, exclmat, obs_index, A())
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, exclmat, obs_index, fullmarket, A())
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, exclmat, obs_index, A()),
+        x -> mean_moment_conditions(x, q, Cp, C, S, exclmat, obs_index, fullmarket, A()),
         guess;
         solver_options...,
     )
@@ -39,9 +40,10 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv_legacy})
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Val{:iv_legacy})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
+
 
     # Calculate residuals
     u = q + Cp * ζ
@@ -114,24 +116,42 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv_legacy
         end
     end
 
+    # the efficient weighting requires the scaling of multiplier for each period
+    # only feasible when we observe the full market
+    if fullmarket
+        ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
+        Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
+        Mweights ./= sum(Mweights)
+        err .*= Mweights'
+        # weightsum .*= Mweights'
+    end
+
+    # equal weight the final moment conditions for numerical stability
+    # it's exactly identified at this point hence it's not affecting the estimation
     momweight = sum(abs.(weightsum); dims=2)
-    momweight = momweight ./ sum(momweight)
+    momweight ./= sum(momweight)
     err ./= momweight
 
     return err
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Val{:iv})
     Nm = length(ζ)
     T = obs_index.T
+    # Compute period weights if fullmarket constraint holds
+    Mweights = ones(eltype(ζ), T)
+    if fullmarket
+        ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
+        Mvec = 1 ./ ζSvec
+        Mweights .= Mvec ./ sum(Mvec)
+    end
     err = zeros(eltype(ζ), Nm, T)
 
     # residuals and entity-level precision ------------------------------
     u = q .+ Cp * ζ
     σu²vec = calculate_entity_variance(u, obs_index)
     prec = inv.(σu²vec)
-    # prec ./= sum(prec)
 
     weightsum = zeros(eltype(ζ), Nm, T)
     # 1️⃣ fast O(N) pass
@@ -140,9 +160,20 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, ::Val{:iv})
     # 2️⃣ subtract excluded pairs
     deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_index)
 
-    # Normalize by the weightsum
+    # the efficient weighting requires the scaling of multiplier for each period
+    # only feasible when we observe the full market
+    if fullmarket
+        ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
+        Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
+        Mweights ./= sum(Mweights)
+        err .*= Mweights'
+        # weightsum .*= Mweights'
+    end
+
+    # equal weight the final moment conditions for numerical stability
+    # it's exactly identified at this point hence it's not affecting the estimation
     momweight = sum(abs.(weightsum); dims=2)
-    momweight = momweight ./ sum(momweight)
+    momweight ./= sum(momweight)
     err ./= momweight
 
     return err
@@ -281,7 +312,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_inde
 end
 
 
-function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, ::Val{:debiased_ols})
+function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, fullmarket, ::Val{:debiased_ols})
     Nmom = length(ζ)
     N, T = size(qmat)
     u = vec(qmat) + reshape(Cpts, N * T, Nmom) * ζ
@@ -329,29 +360,9 @@ function solve_aggregate_elasticity(ζ, C, S, obs_index)
     Nmom = length(ζ)
     ζSvec = zeros(eltype(ζ), obs_index.T)
 
-    for t in 1:obs_index.T
-        start_idx = obs_index.start_indices[t]
-        end_idx = obs_index.end_indices[t]
-
-        # Calculate weighted sum for this time period
-        sum_weighted = 0.0
-        denominator = 0.0
-
-        # Directly iterate through observation indices for this period
-        for idx in start_idx:end_idx
-            weight = S[idx]
-
-            # Calculate C * ζ for this observation
-            C_ζ = 0.0
-            for imom in 1:Nmom
-                C_ζ += C[idx, imom] * ζ[imom]
-            end
-
-            sum_weighted += C_ζ * weight
-            denominator += weight
-        end
-
-        ζSvec[t] = sum_weighted
+    @views for t in 1:obs_index.T
+        r = obs_index.start_indices[t]:obs_index.end_indices[t]
+        ζSvec[t] = dot(S[r], C[r, :] * ζ)
     end
 
     return ζSvec
@@ -365,21 +376,14 @@ function solve_vcov(ζ, u, S, C, obs_index)
     Mvec = 1 ./ ζSvec
 
     # Step 1: Efficiently identify all unique entity pairs that co-occur
-    pair_i = Int[]
-    pair_j = Int[]
-
-    # Use the entity_obs_indices matrix to find co-occurring pairs
-    # Two entities co-occur if they both have non-zero indices in any time period
-    for i in 1:N
-        for j in (i+1):N
-            # Check if entities i and j ever appear in the same time period
-            if any((obs_index.entity_obs_indices[i, :] .> 0) .& (obs_index.entity_obs_indices[j, :] .> 0))
-                push!(pair_i, i)
-                push!(pair_j, j)
-            end
-        end
-    end
-
+    # 1) Build presence‐matrix
+    M = obs_index.entity_obs_indices .> 0   # N×T BitMatrix
+    # 2) Compute co‐occurrence counts
+    co = M * transpose(M)                   # N×N dense Int matrix
+    # 3) findall gives you CartesianIndex's for each true entry
+    inds = findall(triu(co .> zero(eltype(co)), 1))       # CartesianIndices of every non-zero count in the upper triangle
+    pair_i = [I[1] for I in inds]
+    pair_j = [I[2] for I in inds]
     # Number of unique entity pairs
     n_pairs = length(pair_i)
 
@@ -408,7 +412,6 @@ function solve_vcov(ζ, u, S, C, obs_index)
                 continue
             end
 
-            # Calculate D values for all moment conditions
             for imom in 1:Nmom
                 D[idx, imom, t] =
                     σu²vec[j] * S[j_pos] * C[i_pos, imom] +
@@ -425,6 +428,7 @@ function solve_vcov(ζ, u, S, C, obs_index)
 
     return σu²vec, Σζ
 end
+
 
 """
 Solve the OLS covariance matrix for the GIV estimation.

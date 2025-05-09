@@ -104,16 +104,18 @@ function giv(
     N = obs_index.N
     Nmom = size(C, 2)
 
+    fullmarket = check_market_clearing(q, S, obs_index)
     if !quiet &&
        algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !check_market_clearing(q, S, obs_index)
-        @warn ("Adding-up constraints not satisfied. `up` and `scalar_search` algorithms may be biased.")
+       !fullmarket
+        @error("Market clearing condition not satisfied. `up` and `scalar_search` algorithms may be biased.")
     end
 
     # residualize against η
     uq, uCp, λq_endog, λCp = residualize_observations(q, Cp, η)
 
     guessvec = parse_guess(formula, guess, Val{algorithm}())
+    
     ζ̂, converged = estimate_giv(
         uq,
         uCp,
@@ -124,6 +126,7 @@ function giv(
         Val{algorithm}();
         guess = guessvec,
         quiet = quiet,
+        fullmarket = fullmarket,
         solver_options = solver_options,
     )
 
