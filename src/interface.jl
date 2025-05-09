@@ -81,6 +81,7 @@ function giv(
     solver_options = (;),
     quiet = false,
     savedf = true,
+    universe_observed = true, # by default we assume we observe the universe
     return_vcov = true,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
@@ -104,10 +105,14 @@ function giv(
     N = obs_index.N
     Nmom = size(C, 2)
 
-    fullmarket = check_market_clearing(q, S, obs_index)
+    if universe_observed # if we suggest we observe the universe, check if the market clear
+        marketclear = check_market_clearing(q, S, obs_index)
+    else
+        marketclear = false
+    end
     if !quiet &&
        algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !fullmarket
+       !marketclear
         @error("Market clearing condition not satisfied. `up` and `scalar_search` algorithms may be biased.")
     end
 
@@ -126,7 +131,7 @@ function giv(
         Val{algorithm}();
         guess = guessvec,
         quiet = quiet,
-        fullmarket = fullmarket,
+        marketclear = marketclear,
         solver_options = solver_options,
     )
 
@@ -134,7 +139,11 @@ function giv(
 
     û = uq + uCp * ζ̂
     if return_vcov
-        σu²vec, Σζ = solve_vcov(ζ̂, û, S, C, obs_index)
+        if marketclear
+            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+        else
+            σu²vec, Σζ = solve_vcov(ζ̂, û, S, C, Cp, obs_index)
+        end
         ols_vcov = solve_ols_vcov(σu²vec, η, obs_index)
         Σλ = ols_vcov + λCp * Σζ * λCp'
     else

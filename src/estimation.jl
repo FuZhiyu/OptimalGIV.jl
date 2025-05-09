@@ -8,7 +8,7 @@ function estimate_giv(
     ::A;
     guess=nothing,
     quiet=false,
-    fullmarket=true,
+    marketclear = true,
     solver_options=(;),
 ) where {A<:Union{Val{:iv},Val{:iv_legacy},Val{:debiased_ols}}}
     if isnothing(guess)
@@ -19,13 +19,13 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, exclmat, obs_index, fullmarket, A())
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, exclmat, obs_index, marketclear, A())
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, exclmat, obs_index, fullmarket, A()),
+        x -> mean_moment_conditions(x, q, Cp, C, S, exclmat, obs_index, marketclear, A()),
         guess;
         solver_options...,
     )
@@ -40,7 +40,7 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Val{:iv_legacy})
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::Val{:iv_legacy})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -65,6 +65,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Va
 
         for imom in 1:Nmom
             # First loop: iterate over i, then j > i
+            # Do it in two loops so that skipping based on iszero(C) check is more efficient
             for idx_i in start_idx:end_idx
                 i = obs_index.ids[idx_i]
 
@@ -118,7 +119,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Va
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
-    if fullmarket
+    if marketclear
         ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
         Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
         Mweights ./= sum(Mweights)
@@ -136,12 +137,12 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Va
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::Val{:iv})
     Nm = length(ζ)
     T = obs_index.T
-    # Compute period weights if fullmarket constraint holds
+    # Compute period weights if marketclear constraint holds
     Mweights = ones(eltype(ζ), T)
-    if fullmarket
+    if marketclear
         ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
         Mvec = 1 ./ ζSvec
         Mweights .= Mvec ./ sum(Mvec)
@@ -162,7 +163,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, fullmarket, ::Va
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
-    if fullmarket
+    if marketclear
         ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
         Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
         Mweights ./= sum(Mweights)
@@ -312,7 +313,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_inde
 end
 
 
-function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, fullmarket, ::Val{:debiased_ols})
+function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, marketclear, ::Val{:debiased_ols})
     Nmom = length(ζ)
     N, T = size(qmat)
     u = vec(qmat) + reshape(Cpts, N * T, Nmom) * ζ
@@ -368,7 +369,7 @@ function solve_aggregate_elasticity(ζ, C, S, obs_index)
     return ζSvec
 end
 
-function solve_vcov(ζ, u, S, C, obs_index)
+function solve_optimal_vcov(ζ, u, S, C, obs_index)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
@@ -429,6 +430,74 @@ function solve_vcov(ζ, u, S, C, obs_index)
     return σu²vec, Σζ
 end
 
+
+
+function solve_vcov(ζ, u, S, C, Cp, obs_index)
+    Nmom = length(ζ)
+    N, T = obs_index.N, obs_index.T
+    σu²vec = calculate_entity_variance(u, obs_index)
+    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
+    Mvec = 1 ./ ζSvec
+
+    # Step 1: Efficiently identify all unique entity pairs that co-occur
+    # 1) Build presence‐matrix
+    M = obs_index.entity_obs_indices .> 0   # N×T BitMatrix
+    # 2) Compute co‐occurrence counts
+    co = M * transpose(M)                   # N×N dense Int matrix
+    # 3) findall gives you CartesianIndex's for each true entry
+    inds = findall(triu(co .> zero(eltype(co)), 1))       # CartesianIndices of every non-zero count in the upper triangle
+    pair_i = [I[1] for I in inds]
+    pair_j = [I[2] for I in inds]
+    # Number of unique entity pairs
+    n_pairs = length(pair_i)
+
+    # Step 2: Initialize arrays for computation
+    Vdiag = zeros(n_pairs)
+    W = zeros(n_pairs, Nmom, T)
+    D = zeros(n_pairs, Nmom, T)
+
+    # Step 3: Compute Vdiag for all pairs
+    for idx in 1:n_pairs
+        i, j = pair_i[idx], pair_j[idx]
+        Vdiag[idx] = σu²vec[i] * σu²vec[j]
+    end
+    precision = 1 ./ σu²vec
+    # Step 4: Compute W matrix (previous D without Mvec scaling)
+    for t in 1:T
+        for idx in 1:n_pairs
+            i, j = pair_i[idx], pair_j[idx]
+            i_pos = obs_index.entity_obs_indices[i, t]
+            j_pos = obs_index.entity_obs_indices[j, t]
+            if i_pos == 0 || j_pos == 0
+                continue
+            end
+            for k in 1:Nmom
+                # when we do not have the full market, we do not scale it by Mvec
+                W[idx, k, t] = precision[i] * S[j_pos] * C[i_pos, k] + precision[j] * S[i_pos] * C[j_pos, k]
+                D[idx, k, t] = u[j_pos] * Cp[i_pos, k] + u[i_pos] * Cp[j_pos, k]
+            end
+        end
+    end
+
+    # Step 6: Final calculation via sandwich formula
+    # Compute sums of D'W and W'Vdiag W across time periods
+    A = zeros(eltype(ζ), Nmom, Nmom)
+    B = zeros(eltype(ζ), Nmom, Nmom)
+    @views for t in 1:T
+        Wt = W[:, :, t]
+        Dt = D[:, :, t]
+
+        A .+= Dt' * Wt
+        B .+= Wt' * (Wt .* Vdiag)
+    end
+    A ./= (T - 1) # to match the solve_vcov as the σu²vec is scaled by T-1
+    B ./= T 
+    # Sandwich variance
+    invA = inv(A)
+    Σζ = invA * B * invA / T
+
+    return σu²vec, Σζ
+end
 
 """
 Solve the OLS covariance matrix for the GIV estimation.

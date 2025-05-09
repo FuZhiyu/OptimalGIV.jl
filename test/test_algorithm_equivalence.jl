@@ -1,5 +1,6 @@
 using Test, GIV, Random, LinearAlgebra
 using GIV: moment_conditions, ObservationIndex
+using DataFrames, CSV
 
 @testset "moment_conditions iv vs iv_legacy" begin
     # Set random seed for reproducibility
@@ -39,8 +40,8 @@ using GIV: moment_conditions, ObservationIndex
             ζ = randn(Nmom)
 
             # Compute moment conditions using both methods
-            err_legacy = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, Val(:iv_legacy))
-            err_new = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, Val(:iv))
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv_legacy))
+            err_new = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv))
 
             # Test that the results are identical within numerical precision
             @test size(err_legacy) == size(err_new)
@@ -65,12 +66,39 @@ using GIV: moment_conditions, ObservationIndex
             ζ = randn(Nmom)
 
             # Compute moment conditions using both methods
-            err_legacy = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, Val(:iv_legacy))
-            err_new = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, Val(:iv))
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv_legacy))
+            err_new = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv))
 
             # Test that the results are identical within numerical precision
             @test size(err_legacy) == size(err_new)
             @test all(isapprox.(err_legacy, err_new, rtol=1e-10))
         end
     end
+end
+
+
+@testset "standard error equivalence" begin
+    df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
+    givmodel = giv(
+        df,
+        @formula(q + id & endog(p) ~ id & (η1 + η2)), # numerical equivalence only holds when the endogenous variables are not included in the instrument
+        :id,
+        :t,
+        :absS;
+        guess=ones(5),
+        algorithm=:iv_legacy,
+    )
+    
+    givmodel2 = giv(
+        df,
+        @formula(q + id & endog(p) ~ id & (η1 + η2)),
+        :id,
+        :t,
+        :absS;
+        guess=ones(5),
+        algorithm=:iv_legacy,
+        universe_observed = false, # use the nonoptimal vcov algorithm
+    )
+    @test maximum(abs,givmodel2.coef - givmodel.coef) < 1e-6
+    @test maximum(abs,givmodel2.vcov - givmodel.vcov) < 1e-6
 end
