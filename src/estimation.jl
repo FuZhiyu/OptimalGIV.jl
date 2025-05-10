@@ -313,35 +313,57 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_inde
 end
 
 
-function moment_conditions(ζ, qmat, Cpts, Cts, Smat, exclmat, marketclear, ::Val{:debiased_ols})
+function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::Val{:debiased_ols})
     Nmom = length(ζ)
-    N, T = size(qmat)
-    u = vec(qmat) + reshape(Cpts, N * T, Nmom) * ζ
-    umat = reshape(u, N, T)
+    N, T = obs_index.N, obs_index.T
 
-    σu²vec = [var(umat[i, :]; mean=zero(eltype(umat))) for i in 1:N]
+    # Calculate residuals
+    u = q + Cp * ζ
+
+    # Calculate variance by entity
+    σu²vec = calculate_entity_variance(u, obs_index)
     precision = 1 ./ σu²vec
-    precision = precision ./ sum(precision)
+    precision ./= sum(precision)
+
+    # Initialize error and weightsum
     err = zeros(eltype(ζ), Nmom, T)
-    ζSvec = solve_aggregate_elasticity(ζ, Cts, Smat, obs_index)
-    weightsum = zeros(eltype(ζ), Nmom, T) # equal weight moment conditions for numerical stability
-    @threads for (imom, t) in Tuple.(CartesianIndices((Nmom, T)))
-        for i in 1:N
-            if iszero(Cts[i, t, imom])
-                continue
+    weightsum = zeros(eltype(ζ), Nmom, T)
+
+    # Calculate ζS for each time period
+    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
+
+    # Loop through time periods
+    @threads for t in 1:T
+        # Get observations range for this time period
+        start_idx = obs_index.start_indices[t]
+        end_idx = obs_index.end_indices[t]
+
+        for imom in 1:Nmom
+            for idx in start_idx:end_idx
+                i = obs_index.ids[idx]
+
+                # Skip if C is zero
+                if iszero(C[idx, imom])
+                    continue
+                end
+
+                weight = precision[i]
+                uCp = u[idx] * Cp[idx, imom]
+                CSσ² = u[idx]^2 * C[idx, imom] * S[idx]
+                # alternatively, use estimated variance
+                # CSσ² = σu²vec[i] * C[idx, imom] * S[idx]
+
+                err[imom, t] += weight * (uCp - CSσ² / ζSvec[t])
+                weightsum[imom, t] += weight
             end
-            weight = precision[i]
-            uCp = umat[i, t] * Cpts[i, t, imom]
-            CSσ² = umat[i, t]^2 * Cts[i, t, imom] * Smat[i, t]
-            # alternatively, use estimated variance
-            # CSσ² = σu²vec[i,t] *(T-1)/T * Cts[i, t, imom] * Smat[i, t]
-            err[imom, t] += weight * (uCp - CSσ² / ζSvec[t])
-            weightsum[imom, t] += weight
         end
     end
+
+    # Equal weight the moment conditions for numerical stability
     momweight = sum(abs.(weightsum); dims=2)
-    momweight = momweight ./ sum(momweight)
-    err ./= momweight # equal weight moment conditions for numerical stability
+    momweight ./= sum(momweight)
+    err ./= momweight
+
     return err
 end
 
