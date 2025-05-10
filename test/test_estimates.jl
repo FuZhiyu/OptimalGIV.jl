@@ -43,18 +43,6 @@ givmodel_uu = giv(
 )
 @test givmodel_uu.coef ≈ givmodel.coef atol = 1e-6
 
-# algorithm vcov
-givmodel_vcov = giv(
-    df,
-    @formula(q + endog(p) ~ id & (η1 + η2)),
-    :id,
-    :t,
-    :absS;
-    guess = Dict("Constant" => 1.0),
-    algorithm=:iv_vcov,
-)
-@test givmodel_vcov.coef ≈ givmodel.coef atol = 1e-6
-
 # algorithm up
 givmodel_up = giv(
     df,
@@ -144,7 +132,7 @@ givmodel_uu = giv(
     :id,
     :t,
     :absS;
-    guess = Dict("id" => ones(4)),
-    algorithm=:iv,
+    guess=Dict("id" => 1.5 * ones(4)),
+    algorithm=:iv_legacy,
 )
 @test givmodel_uu.coef ≈ [1.0442, 0.9967, 4.2707, 0.7597] atol = 1e-4

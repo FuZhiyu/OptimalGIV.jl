@@ -42,8 +42,6 @@ Estimate the GIV model. It returns a `GIVModel` object containing the estimated 
     guess = Dict(:id => [1.0, 2.0], :η => 0.5)
 - `algorithm::Symbol = :iv`: The algorithm to use for estimation. The default is `:iv`. The options are
     - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0
-    - `:iv_vcov`: `:iv_vcov` uses the same set of moment conditions as `:iv` but precomputes the covariance matrices 
-    once and use them during the iteration. Constant weighting across time is required. 
     - `:debiased_ols`: `:debiased_ols` uses the moment condition such that E[u_i C_it p_it] = 1/ζ_St σ_i^2. ]
     It requires the adding-up constraint is satisifed so that Σ_i (q_it weight_i) = 0. 
     If not, the aggregate elasticity will be underestimated.
