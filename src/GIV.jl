@@ -26,10 +26,7 @@ include("givmodels.jl")
 include("interface.jl")
 include("estimation.jl")
 include("scalar_search.jl")
-include("vcov_algorithm.jl")
 include("utils/formula.jl")
-include("utils/delta_method.jl")
-
 include("simulation.jl")
 # include("gmm.jl")
 

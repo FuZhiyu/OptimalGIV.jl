@@ -9,15 +9,15 @@ df.id = CategoricalArray(df.id)
 #============== assuming homogeneous elasticity ==============#
 @testset "homogeneous elasticity" begin
     f = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
-givmodel = giv(
-    df,
+    givmodel = giv(
+        df,
         f,
-    :id,
-    :t,
-    :absS;
-    guess = Dict("Aggregate" => 2.0),
-    algorithm = :scalar_search,
-)
+        :id,
+        :t,
+        :absS;
+        guess=Dict("Aggregate" => 2.0),
+        algorithm=:scalar_search,
+    )
 
     @test givmodel.coef[1] * 2 ≈ 2.5341730 atol = 1e-4
     @test sqrt.(givmodel.vcov)[1] * 2 ≈ 0.2407 atol = 1e-4

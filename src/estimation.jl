@@ -3,7 +3,6 @@ function estimate_giv(
     Cp,
     C,
     S,
-    exclmat,
     obs_index,
     ::A;
     guess=nothing,
@@ -19,13 +18,13 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, exclmat, obs_index, marketclear, A())
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, marketclear, A())
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, exclmat, obs_index, marketclear, A()),
+        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, marketclear, A()),
         guess;
         solver_options...,
     )
@@ -40,7 +39,7 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::Val{:iv_legacy})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv_legacy})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -80,7 +79,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::V
                     j = obs_index.ids[idx_j]
 
                     # Since idx_i < idx_j within a time period, we know i ≠ j
-                    if exclmat[i, j]
+                    if obs_index.exclpairs[i, j]
                         continue
                     end
 
@@ -105,7 +104,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::V
                     i = obs_index.ids[idx_i]
 
                     # Since idx_i < idx_j within a time period, we know i ≠ j
-                    if exclmat[i, j]
+                    if obs_index.exclpairs[i, j]
                         continue
                     end
 
@@ -137,7 +136,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::V
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv})
     Nm = length(ζ)
     T = obs_index.T
     # Compute period weights if marketclear constraint holds
@@ -159,7 +158,7 @@ function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::V
     fast_pass!(weightsum, err, u, C, S, prec, obs_index)
 
     # 2️⃣ subtract excluded pairs
-    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_index)
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
@@ -246,7 +245,7 @@ end
 # ----------------------------------------------------------------------
 #  SECOND PASS  – deduct excluded pairs from err and weightsum
 # ----------------------------------------------------------------------
-function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_index)
+function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
     Nmom = size(err, 1)
     T = obs_index.T
 
@@ -272,7 +271,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_inde
                     j = obs_index.ids[idx_j]
 
                     # We only want to deduct excluded pairs
-                    if !exclmat[i, j]
+                    if !obs_index.exclpairs[i, j]
                         continue
                     end
 
@@ -297,7 +296,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_inde
                     i = obs_index.ids[idx_i]
 
                     # We only want to deduct excluded pairs
-                    if !exclmat[i, j]
+                    if !obs_index.exclpairs[i, j]
                         continue
                     end
 
@@ -313,7 +312,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, exclmat, obs_inde
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, marketclear, ::Val{:debiased_ols})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:debiased_ols})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 

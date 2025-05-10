@@ -81,24 +81,28 @@ function giv(
     savedf = true,
     universe_observed = true, # by default we assume we observe the universe
     return_vcov = true,
-    contrasts=Dict{Symbol,Any}(),
+    contrasts=Dict{Symbol,Any}(), # not tested; 
 )
 
     formula_giv, formula = parse_giv_formula(formula)
     slope_terms, endog_term = parse_endog(formula_giv)
-    endog_name = string(endog_term)
+    endog_name = string(endogsymbol(endog_term))
+
     df = preprocess_dataframe(df, formula, id, t, weight; quiet = quiet)
+
+    # regress the left-hand side q, and Cp on the right-hand side
     Y, X, residuals, β_ols, coefnames_Y, coefnames_X = ols_step(df, formula)
     response_name = coefnames_Y[1]
     elasticity_name = coefnames_Y[2:end]
+
     q, Cp = Y[:, 1], Y[:, 2:end]
     uq, uCp = residuals[:, 1], residuals[:, 2:end]
     S = df[!, weight]
-    exclmat = create_exclusion_matrix(unique(df[!, id]), exclude_pairs)
-    obs_index = create_observation_index(df, id, t)
-    slope_formula_schema = apply_schema(formula_giv.rhs, FullRank(schema(formula_giv.rhs, df, contrasts)), GIVSlopeModel)
-    C = modelcols(collect_matrix_terms(slope_formula_schema), df)
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+    formula_slope = apply_schema(formula_giv.rhs, FullRank(schema(formula_giv.rhs, df, contrasts)), GIVSlopeModel)
+    C = modelcols(collect_matrix_terms(formula_slope), df)
     @assert size(C, 2) == length(elasticity_name)
+
     N = obs_index.N
     Nmom = size(C, 2)
 
@@ -119,7 +123,6 @@ function giv(
         uCp,
         C,
         S,
-        exclmat,
         obs_index,
         Val{algorithm}();
         guess = guessvec,

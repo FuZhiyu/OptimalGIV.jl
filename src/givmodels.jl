@@ -126,11 +126,12 @@ struct ObservationIndex
     end_indices::Vector{Int}    # Ending index for each time period
     ids::Vector{Int}            # Entity IDs for each observation
     entity_obs_indices::Matrix{Int}  # N×T matrix: entity_obs_indices[i,t] = observation index of entity i in period t, or 0 if not present
+    exclpairs::BitMatrix          # N×N matrix: (i,j) pairs that are excluded from moment conditions
     N::Int                      # Total number of entities 
     T::Int                      # Total number of time periods
 end
 
-function create_observation_index(df, id, t)
+function create_observation_index(df, id, t, exclude_pairs=Dict{Int,Vector{Int}}())
     # Ensure data is sorted by (time, id)
     if !issorted(df, [t, id])
         sort!(df, [t, id])
@@ -173,5 +174,7 @@ function create_observation_index(df, id, t)
         entity_obs_indices[entity_id, time_id] = i  # Store actual observation index
     end
 
-    return ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, N, T)
+    exclpairs = create_exclusion_matrix(unique(df[!, id]), exclude_pairs)
+
+    return ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclpairs, N, T)
 end

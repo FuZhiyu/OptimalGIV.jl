@@ -17,7 +17,6 @@ function estimate_giv(
     Cp,
     C,
     S,
-    exclmat,
     obs_index,
     ::Val{:scalar_search};
     guess=nothing,
