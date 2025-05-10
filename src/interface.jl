@@ -138,8 +138,12 @@ function giv(
         else
             σu²vec, Σζ = solve_vcov(ζ̂, û, S, C, Cp, obs_index)
         end
-        ols_vcov = solve_ols_vcov(σu²vec, X, obs_index)
-        Σβ = ols_vcov + β_Cp * Σζ * β_Cp'
+        if size(X, 2) > 0
+            ols_vcov = solve_ols_vcov(σu²vec, X, obs_index)
+            Σβ = ols_vcov + β_Cp * Σζ * β_Cp'
+        else
+            Σβ = zeros(0, 0)
+        end
     else
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nmom, Nmom)
     end
