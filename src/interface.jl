@@ -79,7 +79,7 @@ function giv(
     solver_options = (;),
     quiet = false,
     savedf = true,
-    universe_observed = true, # by default we assume we observe the universe
+    complete_coverage=nothing, # by default we assume we observe the universe
     return_vcov = true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
 )
@@ -104,16 +104,15 @@ function giv(
     @assert size(C, 2) == length(elasticity_name)
 
     N = obs_index.N
-    Nmom = size(C, 2)
+    Nζ = size(C, 2)
+    Nβ = size(X, 2)
 
-    if universe_observed # if we suggest we observe the universe, check if the market clear
-        marketclear = check_market_clearing(q, S, obs_index)
-    else
-        marketclear = false
+    if isnothing(complete_coverage)
+        complete_coverage = check_market_clearing(q, S, obs_index)
     end
     if !quiet &&
        algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !marketclear
+       !complete_coverage
         @error("Market clearing condition not satisfied. `up` and `scalar_search` algorithms may be biased.")
     end
 
@@ -127,7 +126,7 @@ function giv(
         Val{algorithm}();
         guess = guessvec,
         quiet = quiet,
-        marketclear = marketclear,
+        complete_coverage=complete_coverage,
         solver_options = solver_options,
     )
     β_q = β_ols[:, 1]
@@ -136,9 +135,11 @@ function giv(
 
     û = uq + uCp * ζ̂
     if return_vcov
-        if marketclear
+        if complete_coverage
             σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
         else
+            # without complete coverage of the market, we do not have aggregate elasticity
+            # and hence it's not exactly optimal
             σu²vec, Σζ = solve_vcov(ζ̂, û, S, C, Cp, obs_index)
         end
         if size(X, 2) > 0
@@ -150,9 +151,12 @@ function giv(
     else
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nmom, Nmom)
     end
-    # coefdf = create_coef_dataframe(df, formula, [ζ̂; β], [slope_coefnames; factor_coefnames], id)
+    coef = [ζ̂; β]
+    coefnames = [elasticity_name; coefnames_X]
+    vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
+    # coefdf = create_coef_dataframe(df, formula, coef, coefnames, id)
 
-    ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index)
+    ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
 
     dof = length(ζ̂) + length(β)
@@ -184,24 +188,27 @@ function giv(
     end
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     return GIVModel(
-        ζ̂,
-        Σζ,
-        β,
-        Σβ,
-        β_Cp,
+        coef,
+        vcov,
+        Nζ,
+        Nβ,
         σu²vec,
         ζS,
+        complete_coverage,
+
         formula,
         response_name,
         endog_name,
-        elasticity_name,
-        coefnames_X,
+        coefnames,
+
         id,
         t,
         weight,
         exclude_pairs,
+
         DataFrame(),
         savedf,
+
         converged,
         N,
         obs_index.T,

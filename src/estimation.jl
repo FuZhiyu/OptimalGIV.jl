@@ -7,7 +7,7 @@ function estimate_giv(
     ::A;
     guess=nothing,
     quiet=false,
-    marketclear = true,
+    complete_coverage=true,
     solver_options=(;),
 ) where {A<:Union{Val{:iv},Val{:iv_legacy},Val{:debiased_ols}}}
     if isnothing(guess)
@@ -18,13 +18,13 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, marketclear, A())
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A())
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, marketclear, A()),
+        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A()),
         guess;
         solver_options...,
     )
@@ -39,7 +39,7 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv_legacy})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_legacy})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -118,7 +118,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv_le
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
-    if marketclear
+    if complete_coverage
         ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
         Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
         Mweights ./= sum(Mweights)
@@ -136,12 +136,12 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv_le
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv})
     Nm = length(ζ)
     T = obs_index.T
-    # Compute period weights if marketclear constraint holds
+    # Compute period weights if complete_coverage constraint holds
     Mweights = ones(eltype(ζ), T)
-    if marketclear
+    if complete_coverage
         ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
         Mvec = 1 ./ ζSvec
         Mweights .= Mvec ./ sum(Mvec)
@@ -162,7 +162,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:iv})
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
-    if marketclear
+    if complete_coverage
         ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
         Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
         Mweights ./= sum(Mweights)
@@ -312,7 +312,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, marketclear, ::Val{:debiased_ols})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -378,13 +378,16 @@ function residualize_on_η(x, η, cholη=cholesky(η' * η))
     return x - η * λ, λ
 end
 
-function solve_aggregate_elasticity(ζ, C, S, obs_index)
+function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Nmom = length(ζ)
     ζSvec = zeros(eltype(ζ), obs_index.T)
 
     @views for t in 1:obs_index.T
         r = obs_index.start_indices[t]:obs_index.end_indices[t]
         ζSvec[t] = dot(S[r], C[r, :] * ζ)
+        if !complete_coverage # when we do not have the whole market, report avg instead
+            ζSvec[t] /= sum(S[r])
+        end
     end
 
     return ζSvec

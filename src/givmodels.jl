@@ -1,17 +1,17 @@
 struct GIVModel <: StatisticalModel
     coef::Vector{Float64}
     vcov::Matrix{Float64}
-    factor_coef::Vector{Float64}
-    factor_vcov::Matrix{Float64}
-    price_factor_coef::Matrix{Float64}
+    Nelasticity::Int64
+    Ncovariates::Int64
     residual_variance::Vector{Float64}
     agg_coef::Union{Float64,Vector{Float64}}
+    complete_coverage::Bool
 
     formula::FormulaTerm
     responsename::String
     endogname::String
     coefnames::Vector{String}
-    factor_coefnames::Vector{String}
+
     idvar::Symbol
     tvar::Symbol
     weightvar::Symbol

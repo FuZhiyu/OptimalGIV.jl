@@ -23,7 +23,7 @@ function estimate_giv(
     constraints = nothing,
     tol = 1e-6,
     quiet = false,
-    marketclear=true,
+    complete_coverage=true,
     solver_options = (;),
     kwargs...,
 )
