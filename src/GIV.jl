@@ -9,7 +9,7 @@ using ForwardDiff: Dual, Partials
 using NLsolve
 using Parameters
 using StatsModels
-using StatsModels: FullRank
+using StatsModels: apply_schema, schema, hasintercept, InterceptTerm, FullRank, collect_matrix_terms
 using Roots
 using Distributions
 using Reexport
@@ -18,6 +18,8 @@ using StatsFuns
 using Tables
 using Printf
 using PrecompileTools
+using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!
+using FixedEffects: solve_residuals!
 @reexport using StatsAPI
 
 include("givmodels.jl")
@@ -44,6 +46,7 @@ export coef,
     point_estimate,
     nobs,
     dof,
+    fe,
     dof_residual,
     islinear,
     confint,
