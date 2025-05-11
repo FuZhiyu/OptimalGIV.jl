@@ -33,21 +33,19 @@ include("simulation.jl")
 export GIVModel
 export @formula, endog
 export giv,
-    estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, generate_matrices
+    estimate_giv, create_coef_dataframe, preprocess_dataframe
 export coef,
     coefnames,
     coeftable,
     responsename,
     vcov,
     stderror,
-    point_estimate,
     nobs,
     dof,
     fe,
     dof_residual,
     islinear,
     confint,
-    predict_endog
 
 # @setup_workload begin
 #     df = DataFrame(;
