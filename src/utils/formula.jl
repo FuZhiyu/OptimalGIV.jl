@@ -7,11 +7,10 @@ struct GIVSlopeModel <: StatisticalModel end
 struct EndogenousTerm{T} <: AbstractTerm
     x::T
 end
-
+StatsModels.terms(t::EndogenousTerm) = [t.x]
 StatsModels.termvars(t::EndogenousTerm) = [Symbol(t.x)]
 endog(x::Symbol) = EndogenousTerm(term(x))
 endog(x::Term) = EndogenousTerm(x)
-# StatsModels.terms(t::EndogenousTerm) = t.x
 
 has_endog(::EndogenousTerm) = true
 has_endog(::FunctionTerm{typeof(endog)}) = true

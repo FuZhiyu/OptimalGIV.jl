@@ -84,7 +84,7 @@ function giv(
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
 )
-
+    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     formula_giv, formula = parse_giv_formula(formula)
     slope_terms, endog_term = parse_endog(formula_giv)
     endog_name = string(endogsymbol(endog_term))
@@ -179,7 +179,6 @@ function giv(
     else
         resdf = nothing
     end
-    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     return GIVModel(
         coef,
         vcov,
