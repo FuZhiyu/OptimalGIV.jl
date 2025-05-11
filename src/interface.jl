@@ -91,17 +91,18 @@ function giv(
     df = preprocess_dataframe(df, formula, id, t, weight; quiet = quiet)
 
     # regress the left-hand side q, and Cp on the right-hand side
-    Y, X, residuals, β_ols, coefnames_Y, coefnames_X = ols_step(df, formula)
-    response_name = coefnames_Y[1]
-    elasticity_name = coefnames_Y[2:end]
-
+    Y, X, residuals, β_ols, formula_schema = ols_step(df, formula)
+    response_name = coefnames(formula_schema.lhs)[1]
+    elasticity_name = coefnames(formula_schema.lhs)[2:end]
+    covariates_name = coefnames(formula_schema.rhs)
     q, Cp = Y[:, 1], Y[:, 2:end]
     uq, uCp = residuals[:, 1], residuals[:, 2:end]
     S = df[!, weight]
     obs_index = create_observation_index(df, id, t, exclude_pairs)
-    formula_slope = apply_schema(formula_giv.rhs, FullRank(schema(formula_giv.rhs, df, contrasts)), GIVSlopeModel)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
     C = modelcols(collect_matrix_terms(formula_slope), df)
-    @assert size(C, 2) == length(elasticity_name)
+    @assert size(C, 2) == size(Cp, 2)
 
     N = obs_index.N
     Nζ = size(C, 2)
@@ -152,9 +153,9 @@ function giv(
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nmom, Nmom)
     end
     coef = [ζ̂; β]
-    coefnames = [elasticity_name; coefnames_X]
+    coef_names = [elasticity_name; covariates_name]
     vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
-    # coefdf = create_coef_dataframe(df, formula, coef, coefnames, id)
+    coefdf = create_coef_dataframe(df, formula_schema, coef, id)
 
     ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
@@ -199,7 +200,7 @@ function giv(
         formula,
         response_name,
         endog_name,
-        coefnames,
+        coef_names,
 
         id,
         t,
@@ -237,12 +238,12 @@ function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nt
     fe_vars = unique(StatsModels.termvars(formula_fes))
 
     s = schema(formula, df, contrasts)
-    formula_schema = apply_schema(formula, s, FixedEffectModel, has_fe_intercept)
+    formula_schema = apply_schema(formula, s, GIVModel, has_fe_intercept)
     X = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
     coefnames_X = coefnames(formula_schema.rhs)
-    lhs_schema = apply_schema(formula.lhs, FullRank(s), StatisticalModel)
-    Y = modelcols(collect_matrix_terms(lhs_schema), df)
-    coefnames_Y = coefnames(lhs_schema)
+
+    Y = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    coefnames_Y = coefnames(formula_schema.lhs)
 
     if has_fes
         # used to compute tss even without save_fes
@@ -299,27 +300,10 @@ function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nt
     invXhatXhat = Symmetric(.-Xy[1:Nx, 1:Nx])
     coef = Xy[1:Nx, (Nx+1):end]
     residuals = Y - X * coef
-    return Y, X, residuals, coef, coefnames_Y, coefnames_X
+    return Y, X, residuals, coef, formula_schema
 end
 
 
-function get_coefnames(df, formula)
-    dfschema = schema(df, hint_for_categorical(df))
-    response_term, slope_terms, endog_term, exog_terms = parse_endog(formula)
-    slope_coefnames = apply_schema(slope_terms, FullRank(dfschema), GIVModel) |> coefnames
-    if isa(slope_coefnames, String)
-        slope_coefnames = [slope_coefnames]
-    end
-    slope_coefnames = replace(slope_coefnames, "(Intercept)" => "Constant")
-
-    factor_coefnames = apply_schema(exog_terms, FullRank(dfschema), GIVModel) |> coefnames
-    if isa(factor_coefnames, String)
-        factor_coefnames = [factor_coefnames]
-    end
-    endog_name = apply_schema(endog_term, FullRank(dfschema), GIVModel) |> coefnames
-    response_name = apply_schema(response_term, FullRank(dfschema), GIVModel) |> coefnames
-    return slope_coefnames, factor_coefnames, endog_name, response_name
-end
 
 function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
 
@@ -338,105 +322,6 @@ function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
     return df
 end
 
-function process_fe_formula(formula, df)
-
-    if !omitsintercept(formula) & !hasintercept(formula)
-        formula = FormulaTerm(formula.lhs, InterceptTerm{true}() + formula.rhs)
-    end
-    formula, formula_fes = parse_fe(formula)
-    # has_fes = formula_fes != FormulaTerm(ConstantTerm(0), ConstantTerm(0))
-    fes, feids, fekeys = parse_fixedeffect(df, formula_fes)
-    has_fe_intercept = any(fe.interaction isa UnitWeights for fe in fes)
-
-    # remove intercept if absorbed by fixed effects
-    if has_fe_intercept
-        formula = FormulaTerm(formula.lhs, tuple(InterceptTerm{false}(), (term for term in eachterm(formula.rhs) if !isa(term, Union{ConstantTerm,InterceptTerm}))...))
-    end
-    return formula, formula_fes, fes, feids, fekeys, has_fe_intercept
-end
-
-function extract_giv_matrices(
-    df,
-    formula_giv,
-    id,
-    t,
-    weight;
-    exclude_pairs=Pair[],
-    contrasts=Dict{Symbol,Any}(),
-)
-    # Ensure data is sorted by (time, id)
-    if !issorted(df, [t, id])
-        sort!(df, [t, id])
-    end
-
-    # Extract schema and terms
-    giv_schema = schema(formula_giv, df, contrasts)
-    formula_giv_schema = apply_schema(formula_giv, giv_schema, StatisticalModel)
-    formula_slope_schema = apply_schema(formula_giv, giv_schema, GIVSlopeModel) # only extract slope terms
-
-    # Create observation index
-    id_values = unique(df[!, id])
-    t_values = unique(df[!, t])
-    obs_index = create_observation_index(df, id, t)
-
-    # Create exclusion matrix
-    exclmat = create_exclusion_matrix(id_values, exclude_pairs)
-
-    # Extract response variable (q)
-    q = modelcols(formula_giv_schema.lhs, df)
-
-    # # Extract endogenous variable (p)
-    # slope_terms, endog_term = parse_endog(formula_giv)
-    # p = modelcols(apply_schema(endog_term, giv_schema, GIVModel), df)
-
-    # # Check if p is constant across entities for each time period
-    # if !verify_constant_price_by_time(p, obs_index, t_values)
-    #     throw(ArgumentError("Price has to be constant across entities"))
-    # end
-
-    # Generate slope terms
-    C = modelcols(formula_slope_schema.rhs, df)
-    # Convert C to BitArray if it contains only 0s and 1s
-    if all(x -> x == zero(eltype(C)) || x == one(eltype(C)), C)
-        C = BitArray(C)
-    end
-    Nmom = size(C, 2)
-
-    # Create C*p (coefficient * price)
-    Cp = modelcols(formula_giv_schema.rhs, df)
-    # Cp = C .* p
-
-    # # Generate exogenous terms
-    # formula_exog_schema = apply_schema(formula_exog, schema(formula_exog, df, contrasts), FixedEffectModel, true)
-    # X = modelcols(formula_exog_schema.rhs, df)
-
-    S = df[!, weight]
-
-    return q, C, Cp, S, exclmat, obs_index
-end
-
-# Helper function to verify price is constant within each time period
-function verify_constant_price_by_time(p, obs_index, t_values)
-    for t in 1:obs_index.T
-        start_idx = obs_index.start_indices[t]
-        end_idx = obs_index.end_indices[t]
-
-        # Skip empty time periods
-        if start_idx == 0 || end_idx == 0 || start_idx == end_idx
-            continue
-        end
-
-        # Check if p is constant in this time period
-        p_value = p[start_idx]
-        for idx in (start_idx+1):end_idx
-            if abs(p[idx] - p_value) > eps(eltype(p))
-                return false
-            end
-        end
-    end
-
-    return true
-end
 
 parse_guess(formula, guess::Union{Nothing,Vector}, ::Val) = guess
 
@@ -463,15 +348,9 @@ function parse_guess(formula, guess::Dict, ::Any)
     end
 end
 
-function create_coef_dataframe(df, formula, coef, coefname, id)
-    disallowmissing!(df, [Symbol(id); StatsModels.termvars(formula)])
-    f_endog = FormulaTerm(
-        ConstantTerm(0),
-        Tuple(term for term in eachterm(formula.lhs) if has_endog(term)),
-    )
-    dfschema = StatsModels.schema(df, hint_for_categorical(df))
-    slope_terms = eachterm(apply_schema(f_endog.rhs, FullRank(dfschema), GIVModel))
-    exog_terms = eachterm(apply_schema(formula.rhs, FullRank(dfschema), GIVModel))
+function create_coef_dataframe(df, formula_schema, coef, id)
+    slope_terms = eachterm(formula_schema.lhs[2:end])
+    exog_terms = eachterm(formula_schema.rhs.terms)
     terms = [slope_terms..., exog_terms...]
     categorical_terms_symbol = Symbol[]
     cat_symbol(t::CategoricalTerm) = [Symbol(t)]
@@ -487,28 +366,25 @@ function create_coef_dataframe(df, formula, coef, coefname, id)
     for term in terms
         termsym = Symbol(term)
         coefsym = Symbol(termsym, :_coef)
-        coefnamecol = Symbol(termsym, :_coefname)
+        # coefnamecol = Symbol(termsym, :_coefname)
         if has_categorical(term)
             if term isa InteractionTerm
                 term = InteractionTerm((x for x in term.terms if x isa CategoricalTerm))
             end
             catmat = modelcols(term, categories)
-            termcoef = coef[i:i+size(catmat)[2]-1]
-            termcoefname = coefname[i:i+size(catmat)[2]-1]
+            Nlevels = size(catmat)[2]
+            termcoef = coef[i:i+Nlevels-1]
             termmat = modelcols(term, categories)
             categories[!, coefsym] = termmat * termcoef
-            categories[!, coefnamecol] = termcoefname[findfirst.(eachrow(Bool.(termmat)))]
-            i += size(catmat)[2]
+            i += Nlevels
         elseif term isa InterceptTerm{false}
             continue
         else
             categories[!, coefsym] .= coef[i]
-            categories[!, coefnamecol] .= coefname[i]
             i += 1
         end
     end
     if i != length(coef) + 1
-        println(length(coef))
         throw(ArgumentError("Number of coefficients does not match the number of terms. You may be using different formula or dataframe for estimation and creating coef dataframe."))
     end
 
@@ -622,35 +498,4 @@ function check_market_clearing(q, S, obs_index)
     end
 
     return true  # No violations found
-end
-
-"""
-Residualize observation vectors against control variables η.
-
-This function removes the part of each observation vector that can be explained
-by the control variables η.
-
-Parameters:
-- q: The response vector
-- Cp: The coefficient-price interaction matrix
-- η: The control variables matrix
-- Nmom: Number of moment conditions
-
-Returns:
-- uq: Residualized response vector
-- uCp: Residualized coefficient-price interaction matrix
-- λq_endog: Loadings of q on η
-- λCp: Loadings of Cp on η
-"""
-function residualize_observations(q, Cp, η)
-    # Create Cholesky decomposition for efficiency
-    cholη = cholesky(η' * η)
-
-    # Residualize q against η
-    uq, λq_endog = residualize_on_η(q, η, cholη)
-
-    # Residualize Cp against η
-    uCp, λCp = residualize_on_η(Cp, η, cholη)
-
-    return uq, uCp, λq_endog, λCp
 end

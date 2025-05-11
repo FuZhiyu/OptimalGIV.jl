@@ -108,6 +108,28 @@ function StatsModels.apply_schema(
 )
     return InterceptTerm{true}()
 end
+
+"""
+Adpoted from FixedEffectModels.jl
+"""
+function StatsModels.apply_schema(
+    ft::FormulaTerm,
+    sch::StatsModels.Schema,
+    Mod::Type{GIVModel}, has_fe_intercept
+)
+    # make sure the dummies on lhs always have full rank
+    schema_lhs = StatsModels.FullRank(sch)
+    lhs = apply_schema(ft.lhs, schema_lhs, StatisticalModel)
+    schema_rhs = StatsModels.FullRank(sch)
+
+    if has_fe_intercept
+        push!(schema_rhs.already, InterceptTerm{true}())
+    end
+    rhs = collect_matrix_terms(apply_schema(ft.rhs, schema_rhs, StatisticalModel))
+    return FormulaTerm(lhs, rhs)
+end
+
+
 # ##=============== convert the formula to FixedEffectModel-compatible formula ================##
 # function StatsModels.apply_schema(t::FunctionTerm{typeof(endog)}, sch::StatsModels.Schema, Mod::Type{<:_FEMODEL})
 #     apply_schema(EndogenousTerm(t.args[1]), sch, Mod)
