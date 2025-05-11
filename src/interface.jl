@@ -78,10 +78,11 @@ function giv(
     algorithm=:iv,
     solver_options = (;),
     quiet = false,
-    savedf = true,
+    save=:none, # :all or :fe or :none or :residuals
     complete_coverage=nothing, # by default we assume we observe the universe
     return_vcov = true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
+    tol=1e-6,
 )
 
     formula_giv, formula = parse_giv_formula(formula)
@@ -91,7 +92,7 @@ function giv(
     df = preprocess_dataframe(df, formula, id, t, weight; quiet = quiet)
 
     # regress the left-hand side q, and Cp on the right-hand side
-    Y, X, residuals, β_ols, formula_schema = ols_step(df, formula)
+    Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=save)
     response_name = coefnames(formula_schema.lhs)[1]
     elasticity_name = coefnames(formula_schema.lhs)[2:end]
     covariates_name = coefnames(formula_schema.rhs)
@@ -156,6 +157,13 @@ function giv(
     coef_names = [elasticity_name; covariates_name]
     vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
     coefdf = create_coef_dataframe(df, formula_schema, coef, id)
+    if save == :all || save == :fe
+        fedf = select(df, fekeys)
+        fedf = retrieve_fixedeffects!(fedf, oldY * [one(eltype(ζ̂)); ζ̂] - oldX * β, feM, feids)
+        unique!(fedf, fekeys)
+        coefdf = innerjoin(coefdf, fedf; on=intersect(names(coefdf), names(fedf)))
+    end
+
 
     ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
@@ -163,29 +171,13 @@ function giv(
     dof = length(ζ̂) + length(β)
     dof_residual = nrow(df) - dof
 
-    if false
-        df = innerjoin(df, coefdf; on = intersect(names(df), names(coefdf)))
-
-        aggdf = select(df, t) |> unique
-        aggsym = Symbol(endog_name, "coef_agg")
-        if string(aggsym) in names(df)
-            throw(ArgumentError("The column name $(aggsym) already exists in the dataframe. Please rename it to avoid conflict."))
-        end
-        aggdf[!, Symbol(endog_name, "coef_agg")] .= ζS
-        df = innerjoin(df, aggdf; on = t)
-        sort!(df, [t, id])
-        ressym = Symbol(response_name, "_residual")
-        if string(ressym) in names(df)
-            throw(ArgumentError("The column name $(ressym) already exists in the dataframe. Please rename it to avoid conflict."))
-        end
-        df[!, Symbol(response_name, "_residual")] = û
-
-        meansym = Symbol(response_name, "_mean")
-        if string(meansym) in names(df)
-            throw(ArgumentError("The column name $(meansym) already exists in the dataframe. Please rename it to avoid conflict."))
-        end
+    if save == :residuals || save == :all
+        resdf = select(df, id, t)
+        resdf[!, Symbol(response_name, "_residual")] = û
+        resdf = innerjoin(resdf, coefdf; on=intersect(names(resdf), names(coefdf)))
+        sort!(resdf, [t, id])
     else
-        savedf = nothing
+        resdf = nothing
     end
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     return GIVModel(
@@ -207,8 +199,8 @@ function giv(
         weight,
         exclude_pairs,
 
-        DataFrame(),
-        savedf,
+        coefdf,
+        resdf,
 
         converged,
         N,
@@ -250,6 +242,9 @@ function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nt
         if save_fes
             oldY = deepcopy(Y)
             oldX = hcat(X)
+        else
+            oldY = Y
+            oldX = X
         end
 
         cols = vcat(eachcol(Y), eachcol(X))
@@ -283,6 +278,10 @@ function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nt
             @info "Convergence not achieved in $(iterations) iterations; try increasing maxiter or decreasing tol."
         end
         # tss_partial = tss(y, has_intercept | has_fe_intercept, weights)
+    else
+        oldY = Y
+        oldX = X
+        feM = nothing
     end
 
 
@@ -300,10 +299,18 @@ function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nt
     invXhatXhat = Symmetric(.-Xy[1:Nx, 1:Nx])
     coef = Xy[1:Nx, (Nx+1):end]
     residuals = Y - X * coef
-    return Y, X, residuals, coef, formula_schema
+
+    return Y, X, residuals, coef, formula_schema, feM, feids, fekeys, oldY, oldX
 end
 
 
+function retrieve_fixedeffects!(fedf, u, feM, feids; tol=1e-6, maxiter=100)
+    newfes, b, c = solve_coefficients!(u, feM; tol=tol, maxiter=maxiter)
+    for j in eachindex(newfes)
+        fedf[!, feids[j]] = newfes[j]
+    end
+    return fedf
+end
 
 function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
 

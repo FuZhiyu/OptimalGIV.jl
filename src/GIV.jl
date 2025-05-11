@@ -19,7 +19,7 @@ using Tables
 using Printf
 using PrecompileTools
 using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!
-using FixedEffects: solve_residuals!
+using FixedEffects: solve_residuals!, solve_coefficients!
 @reexport using StatsAPI
 
 include("givmodels.jl")
