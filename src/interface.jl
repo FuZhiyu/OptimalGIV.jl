@@ -151,7 +151,7 @@ function giv(
             Σβ = zeros(0, 0)
         end
     else
-        σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nmom, Nmom)
+        σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nβ, Nβ)
     end
     coef = [ζ̂; β]
     coef_names = [elasticity_name; covariates_name]
