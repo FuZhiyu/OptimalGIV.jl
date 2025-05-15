@@ -12,12 +12,10 @@
     varᵤshare = NC == 0 && K == 0 ? 1.0 : 0.2
     constS::Vector{Float64} = solve_S_for_hhi(h, N)
     σᵤcurv = 0.1
-    usupplyshare = 0.2
     σᵤvec::Vector{Float64} = specify_σᵢ(constS, σᵤcurv, 1.0, usupplyshare)
-    DIST::TD = isinf(ν) ? Normal(0, 1.0) : TDist(ν) * sqrt((ν-2)/ν) * 1.0
+    DIST::TD = isinf(ν) ? Normal(0, 1.0) : TDist(ν) * sqrt((ν - 2) / ν) * 1.0
     σp = 2.0
     σζ = 1.0
-    ζs = 1.0
     missingperc = 0.0 # percentage of missing values in the data
 end
 
@@ -25,7 +23,7 @@ end
 To be backward compatible: allow for passing in NamedTuple
 """
 function SimParam(tp::NamedTuple)
-    return SimParam(;tp...)
+    return SimParam(; tp...)
 end
 
 """
@@ -37,7 +35,7 @@ function specify_σᵢ(S, curv, scale, usupplyshare)
     σᵢ² .*= b
     σᵢ = sqrt.(σᵢ²) * scale
     if usupplyshare > 0
-        σD² = sum((S .* σᵢ).^2) # demand side volatility
+        σD² = sum((S .* σᵢ) .^ 2) # demand side volatility
         σs² = usupplyshare * σD² / (1 - usupplyshare) # supply side volatility
         σs = sqrt(σs²)
         σᵢ = [σᵢ; σs]
@@ -76,17 +74,17 @@ end
 function DataFrame(simdata::SimData)
     N, T = size(simdata.q)
     df = DataFrame(
-        S = vec(simdata.S),
-        u = vec(simdata.u),
-        q = vec(simdata.q),
-        id = repeat(1:N, outer = T),
-        ζ = repeat(simdata.ζ, outer = T),
-        t = repeat(1:T, inner = N),
-        p = repeat(vec(simdata.p),inner = N)
+        S=vec(simdata.S),
+        u=vec(simdata.u),
+        q=vec(simdata.q),
+        id=repeat(1:N, outer=T),
+        ζ=repeat(simdata.ζ, outer=T),
+        t=repeat(1:T, inner=N),
+        p=repeat(vec(simdata.p), inner=N)
     )
-    dfc = DataFrame(repeat(simdata.C', inner = (N, 1)), ["η$i" for i in 1:size(simdata.C, 1)])
+    dfc = DataFrame(repeat(simdata.C', inner=(N, 1)), ["η$i" for i in 1:size(simdata.C, 1)])
     df = hcat(df, dfc)
-    df.absS = abs.(df.S)
+    df.S = abs.(df.S)
     return df
 end
 
@@ -103,7 +101,7 @@ function SimData(tp::NamedTuple)
             delete!(tpdict, key)
         end
     end
-    return SimData(;tpdict...)
+    return SimData(; tpdict...)
 end
 
 struct SimModel
@@ -112,27 +110,13 @@ struct SimModel
 end
 
 
-function SimModel(;kwargs...)
-    param = SimParam(;kwargs...)
+function SimModel(; kwargs...)
+    param = SimParam(; kwargs...)
     @unpack_SimParam param
 
-    
     ζ = rand(Normal(0, σζ), N)
-    ζ .-= sum(ζ .* abs.(constS))
+    ζ .-= sum(ζ .* constS)
 
-    supplyflag = ζs > 0 || usupplyshare > 0
-    if supplyflag
-        ζS = 1 / M
-        ζD = ζS - ζs # the elasticity from the demand side
-        @assert ζD > 0
-        ζ .+= ζD
-        ζ = [ζ; ζs]
-        N = N + 1
-        constS = [constS; -1.0]
-    else
-        ζ .+= 1 / M
-    end
-    absS = abs.(constS)        
 
     u = rand(DIST, N, T) .* σᵤvec
     m = rand(N, NC)
@@ -144,11 +128,11 @@ function SimModel(;kwargs...)
     end
     Λ = rand(N, K)
     η = rand(Normal(), K, T)
-    
+
     if NC > 0 || K > 0
         commonshocks = m * C + Λ * η
-        currentratio = var(absS' * u) / var(absS' * commonshocks)
-        scaleidio = sqrt(varᵤshare / (currentratio * (1-varᵤshare)))
+        currentratio = var(constS' * u) / var(constS' * commonshocks)
+        scaleidio = sqrt(varᵤshare / (currentratio * (1 - varᵤshare)))
         u = u * scaleidio
         σᵤvec .= σᵤvec * scaleidio
     else
@@ -157,18 +141,18 @@ function SimModel(;kwargs...)
     shock = u + m * C + Λ * η
 
 
-    netshock = absS' * shock
-    netshockscale = sqrt(var(netshock * M, mean = zero(eltype(netshock))) / σp^2)
+    netshock = constS' * shock
+    netshockscale = sqrt(var(netshock * M, mean=zero(eltype(netshock))) / σp^2)
     σᵤvec .= σᵤvec / netshockscale
     netshock = netshock / netshockscale
     u ./= netshockscale
     m ./= netshockscale
     Λ ./= netshockscale
     shock = u + m * C + Λ * η
-    netshock = absS' * shock    
+    netshock = constS' * shock
     p = reshape(netshock * M, 1, T) |> Matrix
     q = shock - ζ .* p
-    
+
     # Convert all matrices to allow missing values
     S = allowmissing(constS * ones(1, T))
     u = allowmissing(u)
