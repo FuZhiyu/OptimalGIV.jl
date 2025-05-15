@@ -1,5 +1,6 @@
 using Test, GIV
 using GIV:
+    parse_giv_formula,
     InteractionTerm,
     ConstantTerm,
     term,
@@ -20,22 +21,21 @@ f = @formula(q + id & endog(p) ~ 0)
     tuple(term(:q), InteractionTerm((term(:id), EndogenousTerm(term(:p))))),
     ConstantTerm(0),
 )
-##============= test parsing_formula =============##
-response_term, slope_terms, endog_term, exog_terms = parse_endog(f)
-@test response_term == GIV.term(:q)
+##============= test parsing_giv_formula =============##
+f = replace_function_term(f)
+f_giv, f_main = parse_giv_formula(f)
+@test f_giv.lhs == GIV.term(:q)
+slope_terms, endog_term = parse_endog(f_giv)
 @test slope_terms == tuple(term(:id))
-response_term, slope_terms, endog_term, exog_terms = parse_endog(@formula(q + id & endog(p) ~ id & η + S & η))
-@test exog_terms == tuple(InteractionTerm((term(:id), term(:η))), InteractionTerm((term(:S),  term(:η))))
+@test endog_term == EndogenousTerm(term(:p))
 
-_, slope_terms, _ = parse_endog(@formula(q + endog(p) ~ 0))
-@test slope_terms == tuple(ConstantTerm(1))
-
+# always order the response term first
+f_giv, f_main = parse_giv_formula(@formula(id & endog(p) + q ~ 0))
+@test f_main.lhs[1] == term(:q)
 # formula has to have endogenous variable
-@test_throws ArgumentError parse_endog(@formula(q + id ~ 0))
+@test_throws ArgumentError parse_giv_formula(@formula(q + id ~ 0))
 # endogenous variables only appears on the left hand side
-@test_throws ArgumentError parse_endog(@formula(q + id & endog(p) ~ endog(p)))
-# only one endogenous variable is allowed
-@test_throws ArgumentError parse_endog(@formula(q + id & endog(p) + endog(f) ~ 0))
+@test_throws ArgumentError parse_giv_formula(@formula(q + id & endog(p) ~ endog(p)))
 # only one response variable is allowed
-@test_throws ArgumentError parse_endog(@formula(q + g + id & endog(p) ~ 0))
+@test_throws ArgumentError parse_giv_formula(@formula(q + g + id & endog(p) ~ 0))
 
