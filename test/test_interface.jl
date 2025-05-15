@@ -1,7 +1,7 @@
 using Test, GIV, DataFrames, CategoricalArrays
-using GIV: get_coefnames, preprocess_dataframe, generate_matrices
+using GIV: preprocess_dataframe
 df = DataFrame(
-    id=repeat(1:10, outer=50),
+    id=categorical(repeat(1:10, outer=50)),
     t=repeat(1:50, inner=10),
     S=rand(10 * 50),
     q=rand(10 * 50),
@@ -14,13 +14,13 @@ df = DataFrames.shuffle(df)
 
 
 ##============= test preprocess_dataframe =============##
+#TODO: to be fixed
 df2 = preprocess_dataframe(df, @formula(q + id & endog(p) ~ η), :id, :t, :S)
 @test issorted(df2, [:t, :id])
 
 
 ##============= test get_coefnames =============##
 df_processed = preprocess_dataframe(df, @formula(q + id & endog(p) ~ η), :id, :t, :S)
-slope_names, factor_names, endog_name, resp_name = GIV.get_coefnames(df_processed, @formula(p + id & endog(q) ~ η))
 @test slope_names == ["id: $i" for i in 1:10]
 @test factor_names == ["η"]
 @test endog_name == "q"
