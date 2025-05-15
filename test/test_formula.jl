@@ -8,7 +8,9 @@ using GIV:
     parse_endog,
     replace_function_term,
     EndogenousTerm
-
+using DataFrames
+using StatsModels: apply_schema, schema, FullRank, InterceptTerm, Schema
+using CategoricalArrays
 f = @formula(q + id & endog(p) ~ 0)
 ##============= test has_endog =============##
 @test has_endog(f)
@@ -38,4 +40,16 @@ f_giv, f_main = parse_giv_formula(@formula(id & endog(p) + q ~ 0))
 @test_throws ArgumentError parse_giv_formula(@formula(q + id & endog(p) ~ endog(p)))
 # only one response variable is allowed
 @test_throws ArgumentError parse_giv_formula(@formula(q + g + id & endog(p) ~ 0))
+
+##============= test apply_schema =============##
+data = DataFrame(x=[1, 2, 3], y=[1, 2, 3], z=categorical([1, 2, 3]))
+sch = schema(data)
+
+# Test formula with categorical variables on both sides
+f = @formula(y + endog(x) & z ~ x & z + z)
+ft = apply_schema(f, sch, GIVModel, true)
+# left hand side interaction is full rank
+@test size(ft.lhs[2].terms[2].contrasts.matrix) == (3, 3)
+@test size(ft.rhs.terms[1].contrasts.matrix) == (3, 2)
+@test size(ft.rhs.terms[2].terms[2].contrasts.matrix) == (3, 3)
 

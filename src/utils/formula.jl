@@ -100,14 +100,6 @@ function StatsModels.apply_schema(
     return apply_schema(t.x, sch, Mod)
 end
 
-function StatsModels.apply_schema(
-    t::EndogenousTerm,
-    sch::StatsModels.Schema,
-    Mod::Type{<:GIVSlopeModel}
-)
-    return InterceptTerm{true}()
-end
-
 """
 Adpoted from FixedEffectModels.jl
 """
@@ -128,22 +120,3 @@ function StatsModels.apply_schema(
     return FormulaTerm(lhs, rhs)
 end
 
-
-# ##=============== convert the formula to FixedEffectModel-compatible formula ================##
-# function StatsModels.apply_schema(t::FunctionTerm{typeof(endog)}, sch::StatsModels.Schema, Mod::Type{<:_FEMODEL})
-#     apply_schema(EndogenousTerm(t.args[1]), sch, Mod)
-# end
-# StatsModels.apply_schema(t::EndogenousTerm, schema, Mod::Type{<:_FEMODEL}) = apply_schema(t.x, schema, mod)
-
-# function StatsModels.apply_schema(t::AbstractTerm, schema, Mod::Type{<:_ABSTRACTFEMODEL})
-#     println("invoked")
-#     t = apply_schema(t, schema, StatisticalModel)
-#     if isa(t, CategoricalTerm)
-#         t = FixedEffectModels.FixedEffectTerm(t.sym)
-#     end
-#     return t
-# end
-
-# function StatsModels.modelcols(e::EndogenousTerm, d::NamedTuple)
-#     col = modelcols(p.)
-# end

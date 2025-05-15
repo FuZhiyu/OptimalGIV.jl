@@ -45,7 +45,7 @@ export coef,
     fe,
     dof_residual,
     islinear,
-    confint,
+    confint
 
 # @setup_workload begin
 #     df = DataFrame(;
