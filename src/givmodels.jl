@@ -1,7 +1,7 @@
 struct GIVModel <: StatisticalModel
     coef::Vector{Float64}
     vcov::Matrix{Float64}
-    Nelasticity::Int64
+    Nelasticities::Int64
     Ncovariates::Int64
     residual_variance::Vector{Float64}
     agg_coef::Union{Float64,Vector{Float64}}

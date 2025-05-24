@@ -83,13 +83,14 @@ function giv(
     return_vcov = true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
+    min_occurrences=3,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     formula_giv, formula = parse_giv_formula(formula)
     slope_terms, endog_term = parse_endog(formula_giv)
     endog_name = string(endogsymbol(endog_term))
 
-    df = preprocess_dataframe(df, formula, id, t, weight; quiet = quiet)
+    df = preprocess_dataframe(df, formula, id, t, weight; quiet=quiet, min_occurrences=min_occurrences)
 
     # regress the left-hand side q, and Cp on the right-hand side
     Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=save)
@@ -142,7 +143,7 @@ function giv(
         else
             # without complete coverage of the market, we do not have aggregate elasticity
             # and hence it's not exactly optimal
-            σu²vec, Σζ = solve_vcov(ζ̂, û, S, C, Cp, obs_index)
+            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
         end
         if size(X, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X, obs_index)
@@ -157,7 +158,7 @@ function giv(
     coef_names = [elasticity_name; covariates_name]
     vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
     coefdf = create_coef_dataframe(df, formula_schema, coef, id)
-    if save == :all || save == :fe
+    if (save == :all || save == :fe) && length(feids) > 0
         fedf = select(df, fekeys)
         fedf = retrieve_fixedeffects!(fedf, oldY * [one(eltype(ζ̂)); ζ̂] - oldX * β, feM, feids)
         unique!(fedf, fekeys)
@@ -311,16 +312,16 @@ function retrieve_fixedeffects!(fedf, u, feM, feids; tol=1e-6, maxiter=100)
     return fedf
 end
 
-function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
+function preprocess_dataframe(df, formula, id, t, weight; quiet=false, min_occurrences=3)
 
     # check data compatibility
     allvars = StatsModels.termvars(formula)
     df = select(df, unique([id, t, weight, allvars...]))
     dropmissing!(df)
-
     if any(nonunique(df, [id, t]))
         throw(ArgumentError("Observations are not uniquely identified by `id` and `t`"))
     end
+    df = DataFrame(filter(x -> nrow(x) >= min_occurrences, groupby(df, [:id])))
 
     all(df[!, weight] .>= 0) ||
         throw(ArgumentError("Weight must be non-negative. You can swap the sign of y and S if necessary."))
@@ -328,6 +329,23 @@ function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
     return df
 end
 
+function extract_matrices(df, formula, id, t, weight; exclude_pairs=Dict{Int,Vector{Int}}(), contrasts=Dict{Symbol,Any}())
+    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
+    formula_giv, formula = parse_giv_formula(formula)
+    slope_terms, endog_term = parse_endog(formula_giv)
+    df = preprocess_dataframe(df, formula, id, t, weight)
+    # regress the left-hand side q, and Cp on the right-hand side
+    Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=true)
+
+    q, Cp = Y[:, 1], Y[:, 2:end]
+    uq, uCp = residuals[:, 1], residuals[:, 2:end]
+    S = df[!, weight]
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
+    C = modelcols(collect_matrix_terms(formula_slope), df)
+    return q, Cp, C, uq, uCp, S, obs_index
+end
 
 parse_guess(formula, guess::Union{Nothing,Vector}, ::Val) = guess
 
