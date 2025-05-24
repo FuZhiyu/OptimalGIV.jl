@@ -1,4 +1,4 @@
-module GIV
+module OptimalGIV
 using Random
 using Base.Threads
 using DataFrames

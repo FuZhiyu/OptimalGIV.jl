@@ -1,6 +1,6 @@
-name = "GIV"
+name = "OptimalGIV"
 uuid = "bf339e5b-51e6-4b7b-82b3-758165633231"
-version = "0.0.1"
+version = "0.1.0"
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"

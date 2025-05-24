@@ -1,4 +1,4 @@
-using GIV
+using OptimalGIV
 using Einsum, LinearAlgebra, Test
 using StatsBase, Random
 Random.seed!(2)

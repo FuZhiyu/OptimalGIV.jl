@@ -1,5 +1,5 @@
 using Test, GIV, DataFrames, CategoricalArrays
-using GIV: get_coefnames, preprocess_dataframe, generate_matrices
+using OptimalGIV: get_coefnames, preprocess_dataframe, generate_matrices
 df = DataFrame(
     id=repeat(1:10, outer=50),
     t=repeat(1:50, inner=10),

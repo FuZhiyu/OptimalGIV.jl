@@ -1,5 +1,5 @@
 using Test, GIV
-using GIV:
+using OptimalGIV:
     InteractionTerm,
     ConstantTerm,
     term,

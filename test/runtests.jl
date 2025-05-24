@@ -1,4 +1,4 @@
-using GIV
+using OptimalGIV
 using Test
 
 tests = [
