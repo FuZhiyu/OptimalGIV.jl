@@ -456,12 +456,10 @@ end
 
 
 
-function solve_vcov(ζ, u, S, C, Cp, obs_index)
-    Nmom = length(ζ)
+function solve_vcov(u, S, C, Cp, obs_index)
+    Nmom = size(C, 2)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
-    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
-    Mvec = 1 ./ ζSvec
 
     # Step 1: Efficiently identify all unique entity pairs that co-occur
     # 1) Build presence‐matrix
@@ -485,6 +483,7 @@ function solve_vcov(ζ, u, S, C, Cp, obs_index)
         i, j = pair_i[idx], pair_j[idx]
         Vdiag[idx] = σu²vec[i] * σu²vec[j]
     end
+
     precision = 1 ./ σu²vec
     # Step 4: Compute W matrix (previous D without Mvec scaling)
     for t in 1:T
@@ -505,8 +504,8 @@ function solve_vcov(ζ, u, S, C, Cp, obs_index)
 
     # Step 6: Final calculation via sandwich formula
     # Compute sums of D'W and W'Vdiag W across time periods
-    A = zeros(eltype(ζ), Nmom, Nmom)
-    B = zeros(eltype(ζ), Nmom, Nmom)
+    A = zeros(eltype(u), Nmom, Nmom)
+    B = zeros(eltype(u), Nmom, Nmom)
     @views for t in 1:T
         Wt = W[:, :, t]
         Dt = D[:, :, t]
@@ -516,10 +515,11 @@ function solve_vcov(ζ, u, S, C, Cp, obs_index)
     end
     A ./= (T - 1) # to match the solve_vcov as the σu²vec is scaled by T-1
     B ./= T 
+    B = Symmetric(B + B') / 2
     # Sandwich variance
     invA = inv(A)
-    Σζ = invA * B * invA / T
-
+    Σζ = invA * B * invA' / T
+    Σζ = Symmetric(Σζ + Σζ') / 2
     return σu²vec, Σζ
 end
 
