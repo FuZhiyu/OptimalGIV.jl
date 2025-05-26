@@ -13,7 +13,7 @@ Cpts = Cts .* p'
 Smat = rand(N) * ones(1, T)
 
 ##================== test construction of covariance tensors ==================##
-Cqq, CqCp, CCpq, CCpCp, qq, Cpq, CpCp = GIV.compuate_covariance_tensors(qmat, Cpts, Cts)
+Cqq, CqCp, CCpq, CCpCp, qq, Cpq, CpCp = OptimalGIV.compuate_covariance_tensors(qmat, Cpts, Cts)
 
 (@einsum Cqq2[i, g, j] := Cts[i, t, g] * qmat[j, t] * qmat[i, t]) ./= T-1
 @test norm(Cqq2 - Array(Cqq)) < 1e-12
@@ -35,20 +35,20 @@ Cqq, CqCp, CCpq, CCpCp, qq, Cpq, CpCp = GIV.compuate_covariance_tensors(qmat, Cp
 
 ##================== test the moment condition ==================##
 ζ = rand(Nmom)
-σu²vec = GIV.compute_u_variance(ζ, qq, Cpq, CpCp)
+σu²vec = OptimalGIV.compute_u_variance(ζ, qq, Cpq, CpCp)
 u = qmat + dropdims(sum(Cpts .* reshape(ζ, 1, 1, Nmom), dims = 3), dims = 3)
 σu²vec2 = vec(sum(u .^ 2, dims = 2)/(T-1))
 @test norm(σu²vec2 - σu²vec) < 1e-12
 
 
 ##================== test the err_ig ==================##
-err_ig = GIV.compute_err_ig(ζ, Cqq, CqCp, CCpq, CCpCp, zeros(Bool, N, N))
+err_ig = OptimalGIV.compute_err_ig(ζ, Cqq, CqCp, CCpq, CCpCp, zeros(Bool, N, N))
 (@einsum err_ig2[i,g,j] := u[i,t] * u[j,t] * Cts[i,t,g]) ./= T-1
 @test norm(err_ig2 - Array(err_ig)) < 1e-12
 
 ζ, converged = estimate_giv(qmat, Cpts, Cts, Smat, zeros(Bool, N, N), Val{:iv}(); guess=ones(7))
 @assert converged
-@test norm(GIV.mean_vcov_err(
+@test norm(OptimalGIV.mean_vcov_err(
     ζ,
     Cqq,
     CqCp,
@@ -62,7 +62,7 @@ err_ig = GIV.compute_err_ig(ζ, Cqq, CqCp, CCpq, CCpCp, zeros(Bool, N, N))
 )) < 1e-8
 
 ##================== test estimate_giv using vcov ==================##
-# ζ2, converged = GIV.estimate_giv_with_vcov(qmat, Cpts, Cts, Smat; guess = ones(7))
+# ζ2, converged = OptimalGIV.estimate_giv_with_vcov(qmat, Cpts, Cts, Smat; guess = ones(7))
 
 
 
@@ -71,7 +71,7 @@ err_ig = GIV.compute_err_ig(ζ, Cqq, CqCp, CCpq, CCpCp, zeros(Bool, N, N))
 # using Test, GIV
 # using DataFrames, CSV
 # # Random.seed!(6)
-# simmodel = GIV.SimModel(T = 60, N = 10, varᵤshare = 0.8, usupplyshare = 0.2, h = 0.3, σᵤcurv = 0.2, ζs = 0.5, NC = 2, M = 0.5)
+# simmodel = OptimalGIV.SimModel(T = 60, N = 10, varᵤshare = 0.8, usupplyshare = 0.2, h = 0.3, σᵤcurv = 0.2, ζs = 0.5, NC = 2, M = 0.5)
 # # df = DataFrame(simmodel.data)
 # # CSV.write("$(@__DIR__)/../examples/simdata1.csv", df)
 # df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
@@ -80,7 +80,7 @@ err_ig = GIV.compute_err_ig(ζ, Cqq, CqCp, CCpq, CCpCp, zeros(Bool, N, N))
 # givmodel = giv(df, @formula(q + endog(p) ~ id & (η1 + η2)), :id, :t, :absS; guess = Dict("Aggregate" => 2.0), algorithm = :scalar_search, dual_coef = true)
 
 # f = @formula(q + endog(p) ~ id & (η1 + η2))
-# response_term, slope_terms, endog_term, exog_terms = GIV.parse_endog(f)
+# response_term, slope_terms, endog_term, exog_terms = OptimalGIV.parse_endog(f)
 
 
 # # est = estimate_model(simmodel.data, coefmapping = ones(Bool, 5, 1), ζSguess = 2.0,)

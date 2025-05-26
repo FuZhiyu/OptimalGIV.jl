@@ -1,8 +1,7 @@
+using Test, OptimalGIV, DataFrames, StatsBase, LinearAlgebra
+OptimalGIV.Random.seed!(6)
 
-using Test, GIV, DataFrames, StatsBase, LinearAlgebra
-GIV.Random.seed!(6)
-
-simmodel = GIV.SimModel(T = 60, N = 4, varᵤshare = 0.8, usupplyshare = 0.2, h = 0.3, σᵤcurv = 0.2, ζs = 0.5, NC = 2, M = 0.5)
+simmodel = OptimalGIV.SimModel(T=60, N=4, varᵤshare=0.8, usupplyshare=0.2, h=0.3, σᵤcurv=0.2, ζs=0.5, NC=2, M=0.5)
 df = DataFrame(simmodel.data)
 # CSV.write("$(@__DIR__)/../examples/simdata1.csv", df)
 # df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
@@ -12,7 +11,7 @@ function monte_carlo(;
     simulation_parameters = (;),
     estimation_parameters = (;),
 )
-    simmodel = GIV.SimModel(;simulation_parameters...)
+    simmodel = OptimalGIV.SimModel(; simulation_parameters...)
     df = DataFrame(simmodel.data)
     givmodel = giv(df,formula, :id, :t, :absS; estimation_parameters...)
     bias = givmodel.coef - unique(vec(simmodel.data.ζ))
@@ -32,7 +31,7 @@ end
 
 function monte_carlo(Nsims; seed = nothing, kwargs...)
     if !isnothing(seed)
-        GIV.Random.seed!(seed)
+        OptimalGIV.Random.seed!(seed)
     end
 
     biasvec = Vector{Union{Vector{Float64}, Missing}}(undef, Nsims)
@@ -144,7 +143,7 @@ mean(mean.(factor_covered))
 ##================ test interaction ==================##
 function add_interaction(simmodel; Δζ = -0.5)
     param, data = simmodel.param, simmodel.data
-    GIV.@unpack_SimData data
+    OptimalGIV.@unpack_SimData data
     N, T = size(q)
     shock = u + m * C + Λ * η
     absS = abs.(S[:, 1])
@@ -164,7 +163,7 @@ function monte_carlo_with_interaction(;
     simulation_parameters = (;),
     estimation_parameters = (;),
 )
-    simmodel = GIV.SimModel(;simulation_parameters...)
+    simmodel = OptimalGIV.SimModel(; simulation_parameters...)
     simmodel = add_interaction(simmodel; Δζ = Δζ)
     df = DataFrame(simmodel.data)
     df.secondhalf = df.t .> maximum(df.t)/2
@@ -179,7 +178,7 @@ end
 
 function monte_carlo_with_interaction(Nsims; seed = nothing, kwargs...)
     if !isnothing(seed)
-        GIV.Random.seed!(seed)
+        OptimalGIV.Random.seed!(seed)
     end
 
     biasvec = Vector{Union{Vector{Float64}, Missing}}(undef, Nsims)

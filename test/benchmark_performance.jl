@@ -1,7 +1,7 @@
-using Test, GIV, Random
+using Test, OptimalGIV, Random
 using DataFrames, CSV
 Random.seed!(6)
-simmodel = GIV.SimModel(T = 400, N = 100, varᵤshare = 0.8, usupplyshare = 0.0, h = 0.3, σᵤcurv = 0.2, ζs = 0.0, NC = 2, M = 0.5, σζ = 0.0)
+simmodel = OptimalGIV.SimModel(T=400, N=100, varᵤshare=0.8, usupplyshare=0.0, h=0.3, σᵤcurv=0.2, ζs=0.0, NC=2, M=0.5, σζ=0.0)
 df = DataFrame(simmodel.data)
 df.group = mod.(df.id , 10)
 
@@ -30,7 +30,7 @@ df = preprocess_dataframe(df, f, :id, :t, :absS; quiet = true)
     algorithm=:iv_vcov,
 )
 
-# qmat, pmat, Cts, ηts, Smat, uqmat, λq, uCpts, λCp, meanqmat, meanpmat, meanCpts, meanηts = GIV.generate_matrices(df, f, id, t, weight; algorithm = :iv, quiet = false)
+# qmat, pmat, Cts, ηts, Smat, uqmat, λq, uCpts, λCp, meanqmat, meanpmat, meanCpts, meanηts = OptimalGIV.generate_matrices(df, f, id, t, weight; algorithm = :iv, quiet = false)
 
-# @time Cqq, CqCp, CCpq, CCpCp, qq, Cpq, CpCp = GIV.compuate_covariance_tensors(uqmat, uCpts, Cts)
+# @time Cqq, CqCp, CCpq, CCpCp, qq, Cpq, CpCp = OptimalGIV.compuate_covariance_tensors(uqmat, uCpts, Cts)
 

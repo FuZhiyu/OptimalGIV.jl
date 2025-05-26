@@ -1,4 +1,4 @@
-using Test, GIV
+using Test, OptimalGIV
 using OptimalGIV:
     InteractionTerm,
     ConstantTerm,
@@ -16,13 +16,13 @@ f = @formula(q + id & endog(p) ~ 0)
 ##============= test replace_function_term =============##
 @test replace_function_term(term(:id)) == term(:id)
 @test replace_function_term(f.lhs[2]) == InteractionTerm((term(:id), EndogenousTerm(term(:p))))
-@test replace_function_term(f) == GIV.FormulaTerm(
+@test replace_function_term(f) == OptimalGIV.FormulaTerm(
     tuple(term(:q), InteractionTerm((term(:id), EndogenousTerm(term(:p))))),
     ConstantTerm(0),
 )
 ##============= test parsing_formula =============##
 response_term, slope_terms, endog_term, exog_terms = parse_endog(f)
-@test response_term == GIV.term(:q)
+@test response_term == OptimalGIV.term(:q)
 @test slope_terms == tuple(term(:id))
 response_term, slope_terms, endog_term, exog_terms = parse_endog(@formula(q + id & endog(p) ~ id & η + S & η))
 @test exog_terms == tuple(InteractionTerm((term(:id), term(:η))), InteractionTerm((term(:S),  term(:η))))

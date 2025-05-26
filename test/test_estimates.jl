@@ -1,7 +1,7 @@
-using Test, GIV
+using Test, OptimalGIV
 using DataFrames, CSV
 # Random.seed!(6)
-# simmodel = GIV.SimModel(T = 60, N = 4, varᵤshare = 0.8, usupplyshare = 0.2, h = 0.3, σᵤcurv = 0.2, ζs = 0.5, NC = 2, M = 0.5)
+# simmodel = OptimalGIV.SimModel(T = 60, N = 4, varᵤshare = 0.8, usupplyshare = 0.2, h = 0.3, σᵤcurv = 0.2, ζs = 0.5, NC = 2, M = 0.5)
 # df = DataFrame(simmodel.data)
 # CSV.write("$(@__DIR__)/../examples/simdata1.csv", df)
 df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
@@ -18,7 +18,7 @@ givmodel = giv(
 )
 
 f = @formula(q + endog(p) ~ id & (η1 + η2))
-response_term, slope_terms, endog_term, exog_terms = GIV.parse_endog(f)
+response_term, slope_terms, endog_term, exog_terms = OptimalGIV.parse_endog(f)
 
 # est = estimate_model(simmodel.data, coefmapping = ones(Bool, 5, 1), ζSguess = 2.0,)
 # 1/est.M[1]
@@ -82,7 +82,7 @@ givmodel = giv(
 # println(round.(est.ζ, digits = 5))
 @test givmodel.coef ≈ [1.59636, 1.657, 1.29643, 3.33497, 0.58443] atol = 1e-4
 # println(round.(sqrt.(diag(est.Σζ)), digits = 4))
-givse = sqrt.(GIV.diag(givmodel.vcov))
+givse = sqrt.(OptimalGIV.diag(givmodel.vcov))
 @test givse ≈ [1.7824, 0.4825, 0.3911, 0.3846, 0.1732] atol = 1e-4
 
 # println(round.(vec(est.m), digits = 4))
