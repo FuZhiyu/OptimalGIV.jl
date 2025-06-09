@@ -211,7 +211,7 @@ function giv(
     )
 end
 
-function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nthreads=Threads.nthreads(), maxiter=100, tol=1e-6, progress_bar=true, double_precision=true)
+function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nthreads=Threads.nthreads(), maxiter=10000, tol=1e-6, progress_bar=true, double_precision=true)
     if !omitsintercept(formula) & !hasintercept(formula)
         formula = FormulaTerm(formula.lhs, InterceptTerm{true}() + formula.rhs)
     end
