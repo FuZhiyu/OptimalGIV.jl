@@ -1,6 +1,7 @@
-using GIV, DataFrames, CSV, CategoricalArrays, JLD2, Statistics
-using GIV: evaluation_metrics
+using OptimalGIV, DataFrames, CSV, CategoricalArrays, JLD2, Statistics
+using OptimalGIV: evaluation_metrics
 using DataFramesMeta
+using Statistics
 Nsimmax = 100
 simparamdf = CSV.read("simulations/simparamstr.csv", DataFrame)
 
@@ -26,7 +27,7 @@ end
 function estimate_and_evaluate(df::DataFrame, formula; kwargs...)
     df.id = CategoricalArray(df.id)
     model = estimate_simulated_model(df, formula; kwargs...)
-    return GIV.evaluation_metrics(model, df)
+    return OptimalGIV.evaluation_metrics(model, df)
 end
 
 function estimate_simulated_models(simlabel, simparamstr, formula; Nsims=100, estimate_label="estimate", verbose=true, kwargs...)
