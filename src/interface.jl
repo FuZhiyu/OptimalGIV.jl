@@ -321,7 +321,7 @@ function preprocess_dataframe(df, formula, id, t, weight; quiet=false, min_occur
     if any(nonunique(df, [id, t]))
         throw(ArgumentError("Observations are not uniquely identified by `id` and `t`"))
     end
-    df = DataFrame(filter(x -> nrow(x) >= min_occurrences, groupby(df, [:id])))
+    df = DataFrame(filter(x -> nrow(x) >= min_occurrences, groupby(df, [id])))
 
     all(df[!, weight] .>= 0) ||
         throw(ArgumentError("Weight must be non-negative. You can swap the sign of y and S if necessary."))
