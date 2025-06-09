@@ -1,11 +1,9 @@
-module GIV
-using CategoricalArrays
+module OptimalGIV
 using Random
 using Base.Threads
 using DataFrames
 using LinearAlgebra
 using Optim
-using ForwardDiff: Dual, Partials
 using NLsolve
 using Parameters
 using StatsModels
@@ -16,7 +14,6 @@ using Reexport
 using StatsBase
 using StatsFuns
 using Tables
-using Printf
 using PrecompileTools
 using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!
 using FixedEffects: solve_residuals!, solve_coefficients!
@@ -27,6 +24,8 @@ include("interface.jl")
 include("estimation.jl")
 include("scalar_search.jl")
 include("utils/formula.jl")
+# include("utils/delta_method.jl")
+
 include("simulation.jl")
 # include("gmm.jl")
 

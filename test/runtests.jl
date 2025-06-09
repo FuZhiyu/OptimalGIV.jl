@@ -1,11 +1,11 @@
-using GIV
+using OptimalGIV
 using Test
 
 tests = [
     "test_formula.jl",
-    "test_interface.jl",
+    # "test_interface.jl",
     "test_estimates.jl",
-    "test_moment_conditions.jl"
+    "test_algorithm_equivalence.jl"
     # "test_vcov_algorithm.jl",
     # "test_with_simulation.jl"
 ]

@@ -514,7 +514,7 @@ function solve_vcov(u, S, C, Cp, obs_index)
         B .+= Wt' * (Wt .* Vdiag)
     end
     A ./= (T - 1) # to match the solve_vcov as the σu²vec is scaled by T-1
-    B ./= T 
+    B ./= T
     B = Symmetric(B + B') / 2
     # Sandwich variance
     invA = inv(A)

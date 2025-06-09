@@ -1,5 +1,5 @@
-using Test, GIV
-using DataFrames, CSV, CategoricalArrays
+using Test, OptimalGIV
+using DataFrames, CSV, CategoricalArrays, LinearAlgebra
 df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
 df.id = CategoricalArray(df.id)
 #============== assuming homogeneous elasticity ==============#
@@ -77,7 +77,7 @@ end
     # println(round.(est.ζ, digits = 5))
     @test givmodel.coef[1:5] ≈ [1.59636, 1.657, 1.29643, 3.33497, 0.58443] atol = 1e-4
     # println(round.(sqrt.(diag(est.Σζ)), digits = 4))
-    givse = sqrt.(GIV.diag(givmodel.vcov)[1:5])
+    givse = sqrt.(diag(givmodel.vcov)[1:5])
     @test givse ≈ [1.7824, 0.4825, 0.3911, 0.3846, 0.1732] atol = 1e-4
 
     # println(round.(vec(est.m), digits = 4))

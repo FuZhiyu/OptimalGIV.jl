@@ -1,5 +1,5 @@
-using Test, GIV, Random, LinearAlgebra
-using GIV: moment_conditions, ObservationIndex
+using Test, OptimalGIV, Random, LinearAlgebra
+using OptimalGIV: moment_conditions, ObservationIndex
 using DataFrames, CSV
 
 @testset "moment_conditions iv vs iv_legacy" begin
@@ -30,18 +30,18 @@ using DataFrames, CSV
         end
     end
 
-    obs_index = ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, N, T)
 
     # Test case 1: No exclusions
     @testset "No exclusions" begin
         exclmat = BitArray(zeros(N, N))
+        obs_index = ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclmat, N, T)
 
         for _ in 1:3
             ζ = randn(Nmom)
 
             # Compute moment conditions using both methods
-            err_legacy = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv_legacy))
-            err_new = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv))
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_legacy))
+            err_new = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv))
 
             # Test that the results are identical within numerical precision
             @test size(err_legacy) == size(err_new)
@@ -61,13 +61,14 @@ using DataFrames, CSV
                 end
             end
         end
+        obs_index = ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclmat, N, T)
 
         for _ in 1:3
             ζ = randn(Nmom)
 
             # Compute moment conditions using both methods
-            err_legacy = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv_legacy))
-            err_new = moment_conditions(ζ, q, Cp, C, S, exclmat, obs_index, true, Val(:iv))
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_legacy))
+            err_new = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv))
 
             # Test that the results are identical within numerical precision
             @test size(err_legacy) == size(err_new)
@@ -79,9 +80,10 @@ end
 
 @testset "standard error equivalence" begin
     df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
+    df.id = CategoricalArray(df.id)
     givmodel = giv(
         df,
-        @formula(q + id & endog(p) ~ id & (η1 + η2)), # numerical equivalence only holds when the endogenous variables are not included in the instrument
+        @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0), # numerical equivalence only holds when the endogenous variables are not included in the instrument
         :id,
         :t,
         :absS;
@@ -91,14 +93,15 @@ end
     
     givmodel2 = giv(
         df,
-        @formula(q + id & endog(p) ~ id & (η1 + η2)),
+        @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0),
         :id,
         :t,
         :absS;
         guess=ones(5),
         algorithm=:iv_legacy,
-        universe_observed = false, # use the nonoptimal vcov algorithm
+        complete_coverage=false, # use the nonoptimal vcov algorithm
     )
+
     @test maximum(abs,givmodel2.coef - givmodel.coef) < 1e-6
     @test maximum(abs,givmodel2.vcov - givmodel.vcov) < 1e-6
 end
