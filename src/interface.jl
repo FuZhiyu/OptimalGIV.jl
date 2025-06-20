@@ -83,14 +83,13 @@ function giv(
     return_vcov = true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
-    min_occurrences=3,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     formula_giv, formula = parse_giv_formula(formula)
     slope_terms, endog_term = parse_endog(formula_giv)
     endog_name = string(endogsymbol(endog_term))
 
-    df = preprocess_dataframe(df, formula, id, t, weight; quiet=quiet, min_occurrences=min_occurrences)
+    df = preprocess_dataframe(df, formula, id, t, weight)
 
     # regress the left-hand side q, and Cp on the right-hand side
     Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=save)
@@ -264,7 +263,7 @@ function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nt
             if sum(abs2, cols[i]) < tol * sumsquares_pre[i]
                 if i <= length(coefnames_Y)
                     # colinearity not allowed in the current implementation
-                    throw(ArgumentError("Dependent variable $(colnames[1]) is probably perfectly explained by fixed effects."))
+                    throw(ArgumentError("Dependent variable $(colnames[i]) is probably perfectly explained by fixed effects."))
                 else
                     throw(ArgumentError("RHS-variable $(colnames[i]) is collinear with the fixed effects."))
                 end
@@ -312,8 +311,7 @@ function retrieve_fixedeffects!(fedf, u, feM, feids; tol=1e-6, maxiter=100)
     return fedf
 end
 
-function preprocess_dataframe(df, formula, id, t, weight; quiet=false, min_occurrences=3)
-
+function preprocess_dataframe(df, formula, id, t, weight)
     # check data compatibility
     allvars = StatsModels.termvars(formula)
     df = select(df, unique([id, t, weight, allvars...]))
@@ -321,7 +319,10 @@ function preprocess_dataframe(df, formula, id, t, weight; quiet=false, min_occur
     if any(nonunique(df, [id, t]))
         throw(ArgumentError("Observations are not uniquely identified by `id` and `t`"))
     end
-    df = DataFrame(filter(x -> nrow(x) >= min_occurrences, groupby(df, [id])))
+    # check if any id has less than 2 observations
+    if any(x -> nrow(x) < 2, groupby(df, id))
+        throw(ArgumentError("Some entities have less than 2 observations. Please remove them."))
+    end
 
     all(df[!, weight] .>= 0) ||
         throw(ArgumentError("Weight must be non-negative. You can swap the sign of y and S if necessary."))
