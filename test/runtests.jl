@@ -5,9 +5,8 @@ tests = [
     "test_formula.jl",
     # "test_interface.jl",
     "test_estimates.jl",
-    "test_algorithm_equivalence.jl"
-    # "test_vcov_algorithm.jl",
-    # "test_with_simulation.jl"
+    "test_algorithm_equivalence.jl",
+    "test_with_simulation.jl"  # Old simulation test
 ]
 for test in tests
     include("$test")

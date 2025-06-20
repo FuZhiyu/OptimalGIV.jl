@@ -185,11 +185,10 @@ function evaluation_metrics(m::GIVModel, df)
     estζ = m.coef[1:m.Nelasticities]
     Σζ = m.vcov[1:m.Nelasticities, 1:m.Nelasticities]
     if m.Nelasticities == 1
-        S = [1.0]
-        trueζ = trueζ[1:1]
-    else
-        S = iddf.S
+        estζ = repeat(estζ, outer=nrow(iddf))
+        Σζ = ones(nrow(iddf), nrow(iddf)) * Σζ[1]
     end
+    S = iddf.S
     # se_ζ = sqrt.(diag(Σζ))
     # bias = mean(estζ - trueζ)
     # covered = mean(abs.(estζ - trueζ) .<= se_ζ * 1.96)
