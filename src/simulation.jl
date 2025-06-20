@@ -157,11 +157,21 @@ function SimModel(; kwargs...)
     end
 
     simdata = SimData(S, u, Λ, η, p, ζ, q)
-
     model = SimModel(param, simdata)
     return model
 end
 
+##============================= simulation utilities ========================##
+function simulate_data(simparams; Nsims=1000, seed=1)
+    Random.seed!(seed)
+    simdf = Vector{DataFrame}(undef, Nsims)
+    for i in 1:Nsims
+        simdata = SimModel(; simparams...)
+        df = DataFrame(simdata.data)
+        simdf[i] = df
+    end
+    return simdf
+end
 
 function evaluation_metrics(m::GIVModel, df)
     if !m.converged
@@ -217,4 +227,24 @@ function evaluation_metrics(m::GIVModel, df)
     coveredaggβ = abs(estaggβ - trueaggβ) <= se_aggβ * 1.96
 
     return [biasaggζ, se_aggζ, biasaggβ, se_aggβ]
+end
+
+function estimate_simulated_model(df::DataFrame, formula;
+    guess=nothing,
+    save=:none,
+    quiet=true,
+    solver_options=(; ftol=1e-4, iterations=100,),
+    kwargs...)
+    df.id = string.(df.id)
+    if isnothing(guess)
+        guess = unique(df, :id).ζ
+    end
+    model = giv(df, formula, :id, :t, :S; guess=guess, save=save, quiet=quiet, solver_options=solver_options, kwargs...)
+    return model
+end
+
+function estimate_and_evaluate(df::DataFrame, formula; kwargs...)
+    df.id = string.(df.id)
+    model = estimate_simulated_model(df, formula; kwargs...)
+    return evaluation_metrics(model, df)
 end
