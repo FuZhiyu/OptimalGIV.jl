@@ -14,9 +14,9 @@ df = preprocess_dataframe(df, f, :id, :t, :absS; quiet=true)
 q, p, C, Cp, η, S, exclmat, obs_index = GIV.generate_matrices(df, f, id, t, weight)
 
 @btime err1 = GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv}())
-@btime err2 = GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv_legacy}())
-# err2 = GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv_legacy}())
-@profview [GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv_legacy}()) for _ in 1:10]
+@btime err2 = GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv_twopass}())
+# err2 = GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv_twopass}())
+@profview [GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv_twopass}()) for _ in 1:10]
 # @time GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv}())
 @code_warntype GIV.moment_conditions(ones(10), q, Cp, C, S, exclmat, obs_index, Val{:iv}())
 @code_warntype GIV.calculate_entity_variance(S, obs_index)
@@ -27,7 +27,7 @@ q, p, C, Cp, η, S, exclmat, obs_index = GIV.generate_matrices(df, f, id, t, wei
     :t,
     :absS;
     guess=Dict("group" => ones(10)),
-    algorithm=:iv_legacy,
+    algorithm=:iv_twopass,
     return_vcov=false,
     solver_options=(; show_trace=true)
 )

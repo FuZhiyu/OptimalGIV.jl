@@ -105,43 +105,7 @@ end
     )
     @test givmodel_up.coef ≈ givmodel.coef atol = 1e-6
 end
-# #============== exclude certain sectors ==============#
-# subdf = subset(df, :id => (x -> (x) .> 1))
-# givmodel = giv(
-#     subdf,
-#     @formula(q + id & endog(p) ~ id & (η1 + η2)),
-#     :id,
-#     :t,
-#     :absS;
-#     guess = Dict("Aggregate" => 2.0),
-#     algorithm = :scalar_search,
-# )
 
-# # est = estimate_model(simmodel.data, ζSguess = 2.0, exclude_categories = [1])
-# # println(round.(est.ζ[2:5], digits = 4))
-# @test givmodel.coef ≈ [1.9772, 1.4518, 3.4499, 0.7464] atol = 1e-4
-
-# givmodel_up = giv(
-#     subdf,
-#     @formula(q + id & endog(p) ~ id & (η1 + η2)),
-#     :id,
-#     :t,
-#     :absS;
-#     guess = Dict("id" => ones(4)),
-#     algorithm=:debiased_ols,
-# )
-# @test givmodel_up.coef ≈ givmodel.coef atol = 1e-6
-
-# givmodel_uu = giv(
-#     subdf,
-#     @formula(q + id & endog(p) ~ id & (η1 + η2)),
-#     :id,
-#     :t,
-#     :absS;
-#     guess=Dict("id" => 1.5 * ones(4)),
-#     algorithm=:iv_legacy,
-# )
-# @test givmodel_uu.coef ≈ [1.0442, 0.9967, 4.2707, 0.7597] atol = 1e-4
 
 #============== test build_error_function ==============#
 @testset "build_error_function validation" begin

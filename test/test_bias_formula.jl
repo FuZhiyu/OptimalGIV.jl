@@ -47,7 +47,7 @@ var_ushares = 0.95:-0.1:0.1
 biases_symmetric = Float64[]
 estparams = (;
     guess=[1.0],
-    algorithm=:iv_legacy,
+    algorithm=:iv_twopass,
     quiet=true,
     return_vcov=false,
 )
@@ -119,7 +119,7 @@ println("\nTest 4: Symmetric model with heterogeneous elasticity estimation")
 biases_hetero_est = Float64[]
 estparams_hetero = (;
     guess=ones(10),
-    algorithm=:iv_legacy,
+    algorithm=:iv_twopass,
     quiet=true,
     return_vcov=false,
     solver_options= (; iterations = 100, ftol=1e-4),

@@ -40,7 +40,7 @@ using DataFrames, CSV
             ζ = randn(Nmom)
 
             # Compute moment conditions using both methods
-            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_legacy))
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_twopass))
             err_new = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv))
 
             # Test that the results are identical within numerical precision
@@ -67,7 +67,7 @@ using DataFrames, CSV
             ζ = randn(Nmom)
 
             # Compute moment conditions using both methods
-            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_legacy))
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_twopass))
             err_new = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv))
 
             # Test that the results are identical within numerical precision
@@ -88,7 +88,7 @@ end
         :t,
         :absS;
         guess=ones(5),
-        algorithm=:iv_legacy,
+        algorithm=:iv_twopass,
     )
     
     givmodel2 = giv(
@@ -98,7 +98,7 @@ end
         :t,
         :absS;
         guess=ones(5),
-        algorithm=:iv_legacy,
+        algorithm=:iv_twopass,
         complete_coverage=false, # use the nonoptimal vcov algorithm
     )
 

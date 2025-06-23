@@ -9,7 +9,7 @@ function estimate_giv(
     quiet=false,
     complete_coverage=true,
     solver_options=(;),
-) where {A<:Union{Val{:iv},Val{:iv_legacy},Val{:debiased_ols}}}
+) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
             @info "Initial guess is not provided. Using OLS estimate as initial guess."
@@ -39,7 +39,7 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_legacy})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass})
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
