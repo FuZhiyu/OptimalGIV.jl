@@ -44,7 +44,7 @@ function run_simulation_estimation(simparamstr::String, formula;
     min_obs_per_id=5,
     kwargs...)
     # Use simparamstr as the folder name directly
-    simpath = joinpath("simulations", simparamstr)
+    simpath = joinpath("$(@__DIR__)/../simulations", simparamstr)
     simdata_files = readdir(simpath)
     simdata_files = joinpath.(simpath, filter(x -> occursin("simdata_", x), simdata_files))
     simdata_files = simdata_files[1:min(Nsims, length(simdata_files))]
@@ -98,13 +98,13 @@ end
 
 # Main test sets
 # First ensure simulations exist
-if !isfile("simulations/simparamstr.csv")
+if !isfile("$(@__DIR__)/../simulations/simparamstr.csv")
     @info "simparamstr.csv not found, running simulate_data.jl to generate simulations"
     include("simulate_data.jl")
 end
 
 # Load simulation parameters and convert to dictionary
-simparamdf = CSV.read("simulations/simparamstr.csv", DataFrame)
+simparamdf = CSV.read("$(@__DIR__)/../simulations/simparamstr.csv", DataFrame)
 simparams_dict = Dict(row.simulated_model => row.simparamstr for row in eachrow(simparamdf))
 
 # Test different model specifications with bias and coverage together
