@@ -41,6 +41,8 @@ StatsFuns = "0.9, 1"
 StatsModels = "0.7"
 Tables = "1"
 Test = "1"
+FixedEffectModels = "1.12"
+FixedEffects = "2.3"
 julia = "1.9"
 
 [extras]
