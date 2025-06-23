@@ -72,32 +72,33 @@ function giv(
     formula::FormulaTerm,
     id::Symbol,
     t::Symbol,
-    weight::Union{Symbol,Nothing} = nothing;
-    guess = nothing,
+    weight::Union{Symbol,Nothing}=nothing;
+    guess=nothing,
     exclude_pairs=Dict{Int,Vector{Int}}(),
     algorithm=:iv,
-    solver_options = (;),
-    quiet = false,
+    quiet=false,
     save=:none, # :all or :fe or :none or :residuals
     complete_coverage=nothing, # by default we assume we observe the universe
-    return_vcov = true,
+    return_vcov=true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
+    iterations=100,
+    solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
-    formula_giv, formula = parse_giv_formula(formula)
-    slope_terms, endog_term = parse_endog(formula_giv)
-    endog_name = string(endogsymbol(endog_term))
-
     df = preprocess_dataframe(df, formula, id, t, weight)
-
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
-    Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=save)
-    response_name = coefnames(formula_schema.lhs)[1]
-    elasticity_names = coefnames(formula_schema.lhs)[2:end]
-    covariates_names = coefnames(formula_schema.rhs)
-    q, Cp = Y[:, 1], Y[:, 2:end]
+
+    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+
+    X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
+    Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    q, Cp = Y_original[:, 1], Y_original[:, 2:end]
+    Y_feres, X_feres, β_ols, residuals, feM = ols_with_fixed_effects(Y_original, X_original, fes; tol=tol)
+
     uq, uCp = residuals[:, 1], residuals[:, 2:end]
+
     S = df[!, weight]
     obs_index = create_observation_index(df, id, t, exclude_pairs)
 
@@ -107,7 +108,7 @@ function giv(
 
     N = obs_index.N
     Nζ = size(C, 2)
-    Nβ = size(X, 2)
+    Nβ = size(X_original, 2)
 
     if isnothing(complete_coverage)
         complete_coverage = check_market_clearing(q, S, obs_index)
@@ -126,10 +127,10 @@ function giv(
         S,
         obs_index,
         Val{algorithm}();
-        guess = guessvec,
-        quiet = quiet,
+        guess=guessvec,
+        quiet=quiet,
         complete_coverage=complete_coverage,
-        solver_options = solver_options,
+        solver_options=solver_options,
     )
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
@@ -144,8 +145,8 @@ function giv(
             # and hence it's not exactly optimal
             σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
         end
-        if size(X, 2) > 0
-            ols_vcov = solve_ols_vcov(σu²vec, X, obs_index)
+        if size(X_feres, 2) > 0
+            ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
             Σβ = ols_vcov + β_Cp * Σζ * β_Cp'
         else
             Σβ = zeros(0, 0)
@@ -159,7 +160,7 @@ function giv(
     coefdf = create_coef_dataframe(df, formula_schema, coef, id)
     if (save == :all || save == :fe) && length(feids) > 0
         fedf = select(df, fekeys)
-        fedf = retrieve_fixedeffects!(fedf, oldY * [one(eltype(ζ̂)); ζ̂] - oldX * β, feM, feids)
+        fedf = retrieve_fixedeffects!(fedf, Y_original * [one(eltype(ζ̂)); ζ̂] - X_original * β, feM, feids)
         unique!(fedf, fekeys)
         coefdf = innerjoin(coefdf, fedf; on=intersect(names(coefdf), names(fedf)))
     end
@@ -210,96 +211,25 @@ function giv(
     )
 end
 
-function ols_step(df, formula; save=:residuals, contrasts=Dict{Symbol,Any}(), nthreads=Threads.nthreads(), maxiter=10000, tol=1e-6, progress_bar=true, double_precision=true)
-    if !omitsintercept(formula) & !hasintercept(formula)
-        formula = FormulaTerm(formula.lhs, InterceptTerm{true}() + formula.rhs)
-    end
-    formula, formula_fes = parse_fe(formula)
-    has_fes = formula_fes != FormulaTerm(ConstantTerm(0), ConstantTerm(0))
-    save_fes = (save == :fe) | ((save == :all) & has_fes)
+"""
+    get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
 
-    fes, feids, fekeys = parse_fixedeffect(df, formula_fes)
-    has_fe_intercept = any(fe.interaction isa UnitWeights for fe in fes)
-    if has_fe_intercept
-        formula = FormulaTerm(formula.lhs, tuple(InterceptTerm{false}(), (term for term in eachterm(formula.rhs) if !isa(term, Union{ConstantTerm,InterceptTerm}))...))
-    end
-    has_intercept = hasintercept(formula)
+A convenience function to obtain the name of variables from the original formula. 
+"""
+function get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    return get_coefnames(formula_givcore, formula_schema)
+end
 
-    exo_vars = unique(StatsModels.termvars(formula.rhs))
-    fe_vars = unique(StatsModels.termvars(formula_fes))
+function get_coefnames(formula_givcore, formula_schema)
+    slope_terms, endog_term = parse_endog(formula_givcore)
+    endog_name = string(endogsymbol(endog_term))
 
-    s = schema(formula, df, contrasts)
-    formula_schema = apply_schema(formula, s, GIVModel, has_fe_intercept)
-    X = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
-    coefnames_X = coefnames(formula_schema.rhs)
+    response_name = coefnames(formula_schema.lhs)[1]
+    elasticity_names = coefnames(formula_schema.lhs)[2:end]
+    covariates_names = coefnames(formula_schema.rhs)
 
-    Y = modelcols(collect_matrix_terms(formula_schema.lhs), df)
-    coefnames_Y = coefnames(formula_schema.lhs)
-
-    if has_fes
-        # used to compute tss even without save_fes
-        if save_fes
-            oldY = deepcopy(Y)
-            oldX = hcat(X)
-        else
-            oldY = Y
-            oldX = X
-        end
-
-        cols = vcat(eachcol(Y), eachcol(X))
-        colnames = vcat(coefnames_Y, coefnames_X)
-        # compute 2-norm (sum of squares) for each variable 
-        # (to see if they are collinear with the fixed effects)
-        sumsquares_pre = [sum(abs2, x) for x in cols]
-        weights = uweights(nrow(df))
-        # partial out fixed effects
-        feM = AbstractFixedEffectSolver{double_precision ? Float64 : Float32}(fes, weights, Val{:cpu}, nthreads)
-
-        # partial out fixed effects
-        _, iterations, convergeds = solve_residuals!(cols, feM; maxiter=maxiter, tol=tol, progress_bar=progress_bar)
-
-        # set variables that are likely to be collinear with the fixed effects to zero
-        for i in 1:length(cols)
-            if sum(abs2, cols[i]) < tol * sumsquares_pre[i]
-                if i <= length(coefnames_Y)
-                    # colinearity not allowed in the current implementation
-                    throw(ArgumentError("Dependent variable $(colnames[i]) is probably perfectly explained by fixed effects."))
-                else
-                    throw(ArgumentError("RHS-variable $(colnames[i]) is collinear with the fixed effects."))
-                end
-            end
-        end
-
-        # convergence info
-        iterations = maximum(iterations)
-        converged = all(convergeds)
-        if converged == false
-            @info "Convergence not achieved in $(iterations) iterations; try increasing maxiter or decreasing tol."
-        end
-        # tss_partial = tss(y, has_intercept | has_fe_intercept, weights)
-    else
-        oldY = Y
-        oldX = X
-        feM = nothing
-    end
-
-
-    ##############################################################################
-    ##
-    ## Do the regression
-    ##
-    ##############################################################################
-    XX = X'X
-    Nx = size(X, 2)
-    Ny = size(Y, 2)
-    Xy = Symmetric(hvcat(2, XX, X' * Y,
-        zeros(Ny, Nx), zeros(Ny, Ny)))
-    invsym!(Xy; diagonal=1:Nx)
-    invXhatXhat = Symmetric(.-Xy[1:Nx, 1:Nx])
-    coef = Xy[1:Nx, (Nx+1):end]
-    residuals = Y - X * coef
-
-    return Y, X, residuals, coef, formula_schema, feM, feids, fekeys, oldY, oldX
+    return response_name, endog_name, elasticity_names, covariates_names, slope_terms
 end
 
 
@@ -330,40 +260,24 @@ function preprocess_dataframe(df, formula, id, t, weight)
     return df
 end
 
-function extract_matrices(df, formula, id, t, weight; exclude_pairs=Dict{Int,Vector{Int}}(), contrasts=Dict{Symbol,Any}())
-    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
-    formula_giv, formula = parse_giv_formula(formula)
-    slope_terms, endog_term = parse_endog(formula_giv)
-    df = preprocess_dataframe(df, formula, id, t, weight)
-    # regress the left-hand side q, and Cp on the right-hand side
-    Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=true)
-
-    q, Cp = Y[:, 1], Y[:, 2:end]
-    uq, uCp = residuals[:, 1], residuals[:, 2:end]
-    S = df[!, weight]
-    obs_index = create_observation_index(df, id, t, exclude_pairs)
-
-    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
-    C = modelcols(collect_matrix_terms(formula_slope), df)
-    return q, Cp, C, uq, uCp, S, obs_index
-end
-
-parse_guess(elasticity_names, guess::Union{Nothing,Vector}, ::Val) = guess
+parse_guess(elasticity_names, guess::Vector{<:Number}, ::Val) = guess
+parse_guess(elasticity_names, ::Nothing, ::Val) = nothing
 parse_guess(elasticity_names, guess::Number, ::Val) = [guess]
 
 function parse_guess(elasticity_names, guess::Dict, ::Val{:scalar_search})
     if "Aggregate" ∉ keys(guess)
         throw(ArgumentError("To use the scalar-search algorithm, specify the initial guess using \"Aggregate\" as the key in `guess`"))
     end
-    return guess["Aggregate"]
+    return parse_guess(elasticity_names, guess["Aggregate"], Val(:scalar_search))
 end
 
 function parse_guess(elasticity_names, guess::Dict, ::Any)
+    guess = Dict(string(k) => v for (k, v) in pairs(guess))
     return map(elasticity_names) do elasticity_name
-        if string(elasticity_name) ∉ string.(keys(guess))
+        if elasticity_name ∉ keys(guess)
             throw(ArgumentError("Initial guess for \"$(elasticity_name)\" is missing"))
         else
-            return guess[string(elasticity_name)]
+            return guess[elasticity_name]
         end
     end
 end

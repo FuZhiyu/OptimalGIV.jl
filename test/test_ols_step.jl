@@ -1,7 +1,7 @@
-using Test, OptimalGIV, DataFrames, CategoricalArrays, LinearAlgebra, StatsModels, FixedEffectModels
-using OptimalGIV: ols_step, parse_fe
+using Test, OptimalGIV, DataFrames, CategoricalArrays, LinearAlgebra, StatsModels, FixedEffectModels, StatsBase
+using OptimalGIV: ols_with_fixed_effects, parse_fe
 
-@testset "ols_step functionality" begin
+@testset "ols_with_fixed_effects functionality" begin
     # Simulate data
     N = 50  # number of entities
     T = 20  # number of time periods
@@ -48,7 +48,7 @@ using OptimalGIV: ols_step, parse_fe
     f = @formula(y1 + id & y2 ~ id & η1 + fe(id) & η2 + fe(id) + fe(t))
 
     # Run ols_step
-    Y, X, residuals, coef, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, f)
+    Y, X, residuals, coef, formula_schema, feM, feids, fekeys, oldY, oldX, coefnames_Y, coefnames_X = ols_with_fixed_effects(df, f)
 
     # Test 1: Check dimensions
     @test size(Y, 1) == N * T

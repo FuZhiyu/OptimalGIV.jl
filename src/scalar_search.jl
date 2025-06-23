@@ -48,8 +48,8 @@ function estimate_giv(
     # Call the original implementation with reshaped matrices
     p, S_vec, coefmapping = transform_matricies_for_scalar_search(Cpts, Cts, Smat)
 
-    if guess isa Number
-        ζSvec = [find_zero(x -> ζS_err(x, qmat, p, S_vec, coefmapping; kwargs...)[2], guess)]
+    if length(guess) == 1
+        ζSvec = [find_zero(x -> ζS_err(x, qmat, p, S_vec, coefmapping; kwargs...)[2], guess[1])]
     else
         ζSvec = find_zeros(x -> ζS_err(x, qmat, p, S_vec, coefmapping; kwargs...)[2], guess...)
     end

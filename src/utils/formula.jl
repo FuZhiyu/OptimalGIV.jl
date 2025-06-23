@@ -52,6 +52,27 @@ replace_function_term(@nospecialize(t::Tuple)) = replace_function_term.(t)
 replace_function_term(@nospecialize(t::FormulaTerm)) =
     FormulaTerm(replace_function_term(t.lhs), replace_function_term(t.rhs))
 
+
+function separate_giv_ols_fe_formulas(df, formula; contrasts=Dict{Symbol,Any}())
+    formula_givcore, formula = parse_giv_formula(formula)
+
+    # parse fixed effects
+    if !omitsintercept(formula) & !hasintercept(formula)
+        formula = FormulaTerm(formula.lhs, InterceptTerm{true}() + formula.rhs)
+    end
+    formula_nofe, formula_fes = parse_fe(formula)
+
+    fes, feids, fekeys = parse_fixedeffect(df, formula_fes)
+    has_fe_intercept = any(fe.interaction isa UnitWeights for fe in fes)
+    if has_fe_intercept
+        formula_nofe = FormulaTerm(formula_nofe.lhs, tuple(InterceptTerm{false}(), (term for term in eachterm(formula_nofe.rhs) if !isa(term, Union{ConstantTerm,InterceptTerm}))...))
+    end
+    s = schema(formula_nofe, df, contrasts)
+    formula_schema = apply_schema(formula_nofe, s, GIVModel, has_fe_intercept)
+
+    return formula_givcore, formula_schema, fes, feids, fekeys
+end
+
 function parse_giv_formula(@nospecialize(f::FormulaTerm))
     if has_endog(f.rhs)
         throw(ArgumentError("Formula contains endogenous terms on the right-hand side"))
@@ -66,6 +87,9 @@ function parse_giv_formula(@nospecialize(f::FormulaTerm))
         formula_giv = FormulaTerm(response_term, endog_terms + InterceptTerm{false}())
         # making sure the response term is the first term
         formula = FormulaTerm(response_term + endog_terms, f.rhs)
+        if has_fe(formula_giv)
+            throw(ArgumentError("Fixed effects are not allowed for endogenous terms"))
+        end
         return formula_giv, formula
     else
         throw(ArgumentError("Formula does not contain endogenous terms"))

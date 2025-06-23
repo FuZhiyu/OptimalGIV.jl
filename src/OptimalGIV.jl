@@ -15,7 +15,7 @@ using StatsBase
 using StatsFuns
 using Tables
 using PrecompileTools
-using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!
+using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!, has_fe
 using FixedEffects: solve_residuals!, solve_coefficients!
 @reexport using StatsAPI
 
@@ -24,6 +24,7 @@ include("interface.jl")
 include("estimation.jl")
 include("scalar_search.jl")
 include("utils/formula.jl")
+include("utils/ols_fe_solver.jl")
 # include("utils/delta_method.jl")
 
 include("simulation.jl")
@@ -32,7 +33,7 @@ include("simulation.jl")
 export GIVModel
 export @formula, endog
 export giv,
-    estimate_giv, create_coef_dataframe, preprocess_dataframe
+    estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames
 export coef,
     coefnames,
     coeftable,
