@@ -40,19 +40,38 @@ Estimate the GIV model. It returns a `GIVModel` object containing the estimated 
     (a vector in the case of categorical variables and a number otherwise). In the example above, the initial guess can be provided as
     ```julia
     guess = Dict(:id => [1.0, 2.0], :η => 0.5)
+    ```
+- `exclude_pairs::Dict{Int,Vector{Int}} = Dict()`: A dictionary specifying entity pairs to exclude from the moment conditions. 
+    Keys are entity IDs and values are vectors of entity IDs to exclude. For example:
+    ```julia
+    exclude_pairs = Dict(1 => [2, 3], 4 => [5])  # Exclude pairs (1,2), (1,3), (4,5)
+    ```
 - `algorithm::Symbol = :iv`: The algorithm to use for estimation. The default is `:iv`. The options are
-    - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0
+    - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0. 
+    This algorithm uses an identity to achieve O(N) computational complexity.
+    - `:iv_twopass`: Numerically identical to `:iv` but uses a more straightforward O(N²) implementation. 
+    Useful for debugging or when the O(N) trick causes numerical issues.
     - `:debiased_ols`: `:debiased_ols` uses the moment condition such that E[u_i C_it p_it] = 1/ζ_St σ_i^2. ]
     It requires the adding-up constraint is satisifed so that Σ_i (q_it weight_i) = 0. 
     If not, the aggregate elasticity will be underestimated.
     - `:scalar_search`: `:scalar_search` uses the same moment condition `up` but requires the aggregate elasticity be constant across time. 
     It searches for the scalar of the aggregate elasticity and hence very efficient. 
     It can be used for diagnoises or forming initial guess for other algorithms. 
-- `solver_options`: Options to pass to the `nlsolve`. 
-- `quiet::Bool = false`: If `true`, suppress warnings and information.
-
-  - `savedf::Bool = true`: If `true`, the input dataframe is saved in the field `df` of the returned `GIVModel` object. By default, it is `true`. For large datasets or repeated estimation, it is recommended to set it to `false`.
-
+- `quiet::Bool = false`: If `true`, suppress warnings and information messages.
+- `save::Symbol = :none`: Controls what additional information to save:
+    - `:none`: Save only the coefficients and standard errors (default)
+    - `:residuals`: Save residuals in the returned model
+    - `:fe`: Save fixed effects estimates
+    - `:all`: Save both residuals and fixed effects
+- `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
+    If `nothing` (default), automatically detected by checking the market clearing condition. 
+    Can be manually set to `true` or `false` for debugging purposes.
+- `return_vcov::Bool = true`: Whether to calculate and return the variance-covariance matrix.
+- `contrasts::Dict{Symbol,Any} = Dict()`: Contrasts specification for categorical variables (following StatsModels.jl conventions). Untested. Use with caution.
+- `tol::Float64 = 1e-6`: Convergence tolerance for the solver and fixed effects.
+- `iterations::Int = 100`: Maximum number of iterations for the solver.
+- `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
+    Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
 
 # Output
 

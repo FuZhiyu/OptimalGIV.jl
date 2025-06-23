@@ -162,6 +162,61 @@ function SimModel(; kwargs...)
 end
 
 ##============================= simulation utilities ========================##
+"""
+    simulate_data(simparams::NamedTuple; Nsims=1000, seed=1)
+
+Generate multiple simulated panel datasets for Monte Carlo experiments.
+
+# Arguments
+- `simparams::NamedTuple`: Simulation parameters that control the data generating process:
+  - `N::Int = 10`: Number of entities (firms/individuals)
+  - `T::Int = 100`: Number of time periods
+  - `K::Int = 2`: Number of common factors/shocks
+  - `M::Float64 = 0.5`: Aggregate price elasticity (targeted multiplier)
+  - `σζ::Float64 = 1.0`: Standard deviation of entity-specific elasticities
+  - `σp::Float64 = 2.0`: Price volatility
+  - `h::Float64 = 0.2`: Excess HHI (Herfindahl-Hirschman Index) for size distribution
+  - `ushare::Float64 = 0.2`: Share of idiosyncratic shocks in total variation (if K>0)
+  - `σᵤcurv::Float64 = 0.1`: Curvature parameter for size-dependent shock volatility
+  - `ν::Float64 = Inf`: Degrees of freedom for t-distribution (Inf = Normal distribution)
+  - `missingperc::Float64 = 0.0`: Percentage of missing values to introduce
+
+# Keyword Arguments
+- `Nsims::Int = 1000`: Number of simulations to generate
+- `seed::Int = 1`: Random seed for reproducibility
+
+# Returns
+- `Vector{DataFrame}`: Vector of DataFrames, each containing:
+  - `id`: Entity identifier (as String)
+  - `t`: Time period
+  - `q`: Quantity (response variable)
+  - `p`: Price (endogenous variable, constant across entities within time)
+  - `S`: Entity size/weight
+  - `ζ`: True entity-specific elasticity
+  - `η1, η2, ...`: Common factor realizations
+  - `λ1, λ2, ...`: Entity-specific factor loadings
+
+# Example
+```julia
+# Generate 100 datasets with 20 entities over 50 periods
+simulated_dfs = simulate_data(
+    (N = 20, T = 50, K = 3, M = 0.7, σζ = 0.5),
+    Nsims = 100,
+    seed = 123
+)
+
+# Use the first dataset for estimation
+df = simulated_dfs[1]
+model = giv(df, @formula(q + id & endog(p) ~ fe(id) & (η1 + η2 + η3)), :id, :t, :S)
+```
+
+# Data Generating Process
+The simulation generates data according to:
+- `q_it = u_it + Λ_i * η_t - ζ_i * p_t`
+- `p_t = M * Σ_i S_i * (u_it + Λ_i * η_t)`
+- Entity sizes follow a power law distribution calibrated to match target excess HHI
+- Larger entities have less volatile shocks when σᵤcurv > 0
+"""
 function simulate_data(simparams; Nsims=1000, seed=1)
     Random.seed!(seed)
     simdf = Vector{DataFrame}(undef, Nsims)
