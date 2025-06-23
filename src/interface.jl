@@ -94,8 +94,8 @@ function giv(
     # regress the left-hand side q, and Cp on the right-hand side
     Y, X, residuals, β_ols, formula_schema, feM, feids, fekeys, oldY, oldX = ols_step(df, formula, save=save)
     response_name = coefnames(formula_schema.lhs)[1]
-    elasticity_name = coefnames(formula_schema.lhs)[2:end]
-    covariates_name = coefnames(formula_schema.rhs)
+    elasticity_names = coefnames(formula_schema.lhs)[2:end]
+    covariates_names = coefnames(formula_schema.rhs)
     q, Cp = Y[:, 1], Y[:, 2:end]
     uq, uCp = residuals[:, 1], residuals[:, 2:end]
     S = df[!, weight]
@@ -154,7 +154,7 @@ function giv(
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nζ, Nζ), NaN * zeros(Nβ, Nβ)
     end
     coef = [ζ̂; β]
-    coef_names = [elasticity_name; covariates_name]
+    coef_names = [elasticity_names; covariates_names]
     vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
     coefdf = create_coef_dataframe(df, formula_schema, coef, id)
     if (save == :all || save == :fe) && length(feids) > 0
@@ -348,27 +348,22 @@ function extract_matrices(df, formula, id, t, weight; exclude_pairs=Dict{Int,Vec
     return q, Cp, C, uq, uCp, S, obs_index
 end
 
-parse_guess(formula, guess::Union{Nothing,Vector}, ::Val) = guess
+parse_guess(elasticity_names, guess::Union{Nothing,Vector}, ::Val) = guess
+parse_guess(elasticity_names, guess::Number, ::Val) = [guess]
 
-function parse_guess(formula, guess::Dict, ::Val{:scalar_search})
+function parse_guess(elasticity_names, guess::Dict, ::Val{:scalar_search})
     if "Aggregate" ∉ keys(guess)
         throw(ArgumentError("To use the scalar-search algorithm, specify the initial guess using \"Aggregate\" as the key in `guess`"))
     end
     return guess["Aggregate"]
 end
 
-function parse_guess(formula, guess::Dict, ::Any)
-    guess = Dict(Symbol(x) => y for (x, y) in guess)
-    response_term, slope_terms, endog_term, exog_terms = parse_endog(formula)
-    return mapreduce(vcat, slope_terms) do term
-        termsym = Symbol(term)
-        if termsym == Symbol("1")
-            termsym = :Constant
-        end
-        if string(termsym) ∉ string.(keys(guess))
-            throw(ArgumentError("Initial guess for \"$(termsym)\" is missing"))
+function parse_guess(elasticity_names, guess::Dict, ::Any)
+    return map(elasticity_names) do elasticity_name
+        if string(elasticity_name) ∉ string.(keys(guess))
+            throw(ArgumentError("Initial guess for \"$(elasticity_name)\" is missing"))
         else
-            isa(guess[termsym], Number) ? [guess[termsym]] : guess[termsym]
+            return guess[string(elasticity_name)]
         end
     end
 end
