@@ -540,69 +540,92 @@ function solve_ols_vcov(σu²vec, η, obs_index)
     N, T = obs_index.N, obs_index.T
     Nmom = size(η, 2)
 
-    # Initialize per-thread accumulators to avoid data races
-    nthreads = Threads.nthreads()
-    breads = [zeros(Nmom, Nmom) for _ in 1:nthreads]
-    meats = [zeros(Nmom, Nmom) for _ in 1:nthreads]
+    # Preallocate the final matrices
+    bread = zeros(Nmom, Nmom)
+    meat = zeros(Nmom, Nmom)
 
-    @threads for i in 1:N
-        threadid = Threads.threadid()
+    # Process a chunk of entities
+    function process_chunk(chunk_range)::Tuple{Matrix{Float64},Matrix{Float64}}
+        local_bread = zeros(Nmom, Nmom)
+        local_meat = zeros(Nmom, Nmom)
 
+        for i in chunk_range
+            # Collect η values for this entity
+            η_i = zeros(0, Nmom)
+            n_obs = 0  # Count observations for normalization
 
+            # Find all observations for entity i
+            for t in 1:T
+                # Get observation index for entity i in time period t
+                idx = obs_index.entity_obs_indices[i, t]
 
-        # Collect η values for this entity
-        η_i = zeros(0, Nmom)
-        n_obs = 0  # Count observations for normalization
+                # Skip if entity is not in this period
+                if idx == 0
+                    continue
+                end
 
-        # Find all observations for entity i
-        for t in 1:T
-            # Get observation index for entity i in time period t
-            idx = obs_index.entity_obs_indices[i, t]
+                # Add to collected values
+                η_i = vcat(η_i, transpose(η[idx, :]))
+                n_obs += 1
+            end
 
-            # Skip if entity is not in this period
-            if idx == 0
+            # Skip if not enough observations
+            if n_obs < 2
                 continue
             end
 
-            # Add to collected values
-            η_i = vcat(η_i, transpose(η[idx, :]))
-            n_obs += 1
+            # Identify non-zero columns to exploit sparsity
+            zero_cols = vec(all(iszero, η_i; dims=1))
+            nonzero_cols = findall(!x -> x, zero_cols)
+            if isempty(nonzero_cols)
+                continue  # Skip if all columns are zero
+            end
+
+            # Extract non-zero columns
+            η_i_nonzero = η_i[:, nonzero_cols]
+
+            # Compute ηη'_i matrix
+            ηη_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
+            BLAS.syrk!('U', 'T', 1.0 / n_obs, η_i_nonzero, 0.0, ηη_i_sub)
+
+            # Wrap with Symmetric to represent the full symmetric matrix
+            ηη_i_sub_sym = Symmetric(ηη_i_sub, :U)
+
+            # Map back to original dimensions
+            full_ηη_i = zeros(Nmom, Nmom)
+            full_ηη_i[nonzero_cols, nonzero_cols] .= ηη_i_sub_sym
+
+            # Update local accumulators
+            local_bread .+= full_ηη_i
+            local_meat .+= full_ηη_i .* σu²vec[i]
         end
 
-        # Skip if not enough observations
-        if n_obs < 2
-            continue
-        end
-
-        # Identify non-zero columns to exploit sparsity
-        zero_cols = vec(all(iszero, η_i; dims=1))
-        nonzero_cols = findall(!x -> x, zero_cols)
-        if isempty(nonzero_cols)
-            continue  # Skip if all columns are zero
-        end
-
-        # Extract non-zero columns
-        η_i_nonzero = η_i[:, nonzero_cols]
-
-        # Compute ηη'_i matrix
-        ηη_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
-        BLAS.syrk!('U', 'T', 1.0 / n_obs, η_i_nonzero, 0.0, ηη_i_sub)
-
-        # Wrap with Symmetric to represent the full symmetric matrix
-        ηη_i_sub_sym = Symmetric(ηη_i_sub, :U)
-
-        # Map back to original dimensions
-        full_ηη_i = zeros(Nmom, Nmom)
-        full_ηη_i[nonzero_cols, nonzero_cols] .= ηη_i_sub_sym
-
-        # Update per-thread accumulators
-        breads[threadid] .+= full_ηη_i
-        meats[threadid] .+= full_ηη_i .* σu²vec[i]
+        return local_bread, local_meat
     end
 
-    # Sum over all threads
-    bread = sum(breads)
-    meat = sum(meats)
+    # Create smaller chunks for better load balancing
+    nthreads = Threads.nthreads()
+    # Use more chunks than threads for better load balancing
+    n_chunks = nthreads * 2
+    chunk_size = cld(N, n_chunks)
+
+    # Create and spawn tasks with type annotation
+    tasks = Vector{Task}()
+    for c in 1:n_chunks
+        start_idx = (c - 1) * chunk_size + 1
+        end_idx = min(c * chunk_size, N)
+        if start_idx <= end_idx
+            task = Threads.@spawn process_chunk(start_idx:end_idx)
+            push!(tasks, task)
+        end
+    end
+
+    # Collect results from all tasks
+    for task in tasks
+        thread_bread, thread_meat = fetch(task)::Tuple{Matrix{Float64},Matrix{Float64}}
+        bread .+= thread_bread
+        meat .+= thread_meat
+    end
 
     # Compute the covariance matrix using Symmetric to exploit symmetry
     bread_sym = Symmetric(bread)
