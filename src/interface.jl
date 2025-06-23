@@ -78,7 +78,7 @@ function giv(
     algorithm=:iv,
     quiet=false,
     save=:none, # :all or :fe or :none or :residuals
-    complete_coverage=nothing, # by default we assume we observe the universe
+    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
     return_vcov=true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
@@ -116,10 +116,10 @@ function giv(
     if !quiet &&
        algorithm ∈ [:scalar_search, :debiased_ols] &&
        !complete_coverage
-        @error("Market clearing condition not satisfied. `up` and `scalar_search` algorithms may be biased.")
+        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
     end
 
-    guessvec = parse_guess(formula, guess, Val{algorithm}())
+    guessvec = parse_guess(elasticity_names, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
         uq,
         uCp,
@@ -325,64 +325,6 @@ function create_coef_dataframe(df, formula_schema, coef, id)
     return categories
 end
 
-# """
-#     predict_endog(m::GIVModel; <keyword arguments>)
-
-# Predict the endogenous variable based on the estimated GIV model.
-
-# # Arguments
-
-# - `m::GIVModel`: The estimated GIV model.
-# - `df::DataFrame`: The dataframe to predict the endogenous variable. 
-#     It uses the saved dataframe in `m` by default. A different dataframe can be used for prediction to construct counterfactuals.
-
-# ## Keyword Arguments
-# - `coef::Vector{Float64}`: The estimated coefficients. 
-#     It uses the coefficients in `m` by default. A different set of coefficients can be
-#     used to construct counterfactuals.
-# - `factor_coef::Vector{Float64}`: The estimated factor coefficients.
-#     It uses the factor coefficients in `m` by default. A different set of factor coefficients can be
-#     used to construct counterfactuals.
-# - `residual::Symbol`: The name of the residual column in the dataframe. 
-#     By default it uses the estimated residual; different residuals can be used to construct counterfactuals.
-# - `formula::FormulaTerm`: The formula used to estimate the model.
-# - `id::Symbol`: The name of the entity identifier.
-# - `t::Symbol`: The name of the time identifier.
-# - `weight::Symbol`: The name of the weight variable.
-# """
-# function predict_endog(
-#     m::GIVModel,
-#     df = m.df;
-#     coef = m.coef,
-#     factor_coef = m.factor_coef,
-#     residual = Symbol(m.responsename, "_residual"),
-#     formula = m.formula,
-#     id = m.idvar,
-#     t = m.tvar,
-#     weight = m.weightvar,
-#     quiet = false,
-# )
-#     if isnothing(df)
-#         throw(ArgumentError("DataFrame not saved. Rerun the model with `savedf = true`"))
-#     end
-#     # add residual to the rhs
-#     formula = FormulaTerm(formula.lhs, tuple(eachterm(formula.rhs)..., Term(residual)))
-#     factor_coef = [factor_coef; one(eltype(factor_coef))]
-#     df = preprocess_dataframe(df, formula, id, t, weight)
-#     matricies = generate_matrices(df, formula, id, t, weight)
-#     qmat, pmat, Cts, Cpts, ηts, Smat = matricies
-#     N, T, Nmom = size(Cts)
-#     mkc_err = sum(qmat .* Smat; dims = 1) .^ 2
-#     if !quiet && any(>(eps(eltype(qmat))), mkc_err)
-#         @warn ("Adding-up constraints not satisfied. Interpret the results with caution.")
-#     end
-#     aggcoef = solve_aggregate_elasticity(coef, Cts, Smat)
-#     λη = reshape(ηts, N * T, :) * factor_coef
-#     netshock = reshape(λη, N, T)
-#     shockS = sum(netshock .* Smat; dims = 1) |> vec
-#     pvec = shockS ./ aggcoef
-#     return pvec
-# end
 
 function create_exclusion_matrix(id_values, exclude_pairs)
     # Create mapping from id to index
