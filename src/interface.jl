@@ -375,3 +375,79 @@ function check_market_clearing(q, S, obs_index)
 
     return true  # No violations found
 end
+
+"""
+    build_error_function(df, formula, id, t, weight; <keyword arguments>)
+
+Export the error function for the GIV model. This function is useful for debugging and customized solvers. 
+"""
+function build_error_function(df,
+    formula::FormulaTerm,
+    id::Symbol,
+    t::Symbol,
+    weight::Union{Symbol,Nothing}=nothing;
+    exclude_pairs=Dict{Int,Vector{Int}}(),
+    algorithm=:iv,
+    quiet=false,
+    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
+    contrasts=Dict{Symbol,Any}(), # not tested; 
+    tol=1e-6,
+    kwargs...
+)
+    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
+    df = preprocess_dataframe(df, formula, id, t, weight)
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    # regress the left-hand side q, and Cp on the right-hand side
+
+    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+
+    X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
+    Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    q, Cp = Y_original[:, 1], Y_original[:, 2:end]
+    Y_feres, X_feres, β_ols, residuals, feM = ols_with_fixed_effects(Y_original, X_original, fes; tol=tol)
+
+    uq, uCp = residuals[:, 1], residuals[:, 2:end]
+
+    S = df[!, weight]
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
+    C = modelcols(collect_matrix_terms(formula_slope), df)
+
+    if isnothing(complete_coverage)
+        complete_coverage = check_market_clearing(q, S, obs_index)
+    end
+    if !quiet &&
+       algorithm ∈ [:scalar_search, :debiased_ols] &&
+       !complete_coverage
+        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    end
+    if algorithm == :scalar_search
+        # Check if panel is balanced before proceeding
+        N, T = obs_index.N, obs_index.T
+
+        # Verify that we have a balanced panel (N*T observations)
+        if length(q) != N * T
+            throw(ArgumentError("Scalar search algorithm requires a balanced panel"))
+        end
+
+        # Reshape stacked vectors back to matrices/tensors
+        uqmat = reshape(uq, N, T)
+
+        # For C, reshape from (N*T, K) to (N, T, K)
+        Nmom = size(C, 2)
+        Cts = BitArray(reshape(C, N, T, Nmom))
+        uCpts = reshape(uCp, N, T, Nmom)
+
+        Smat = reshape(S, N, T)
+
+        # Call the original implementation with reshaped matrices
+        p, S_vec, coefmapping = transform_matricies_for_scalar_search(uCpts, Cts, Smat)
+
+        err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
+        return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
+    else
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}())
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index)
+    end
+end

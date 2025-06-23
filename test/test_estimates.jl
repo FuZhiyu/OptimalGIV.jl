@@ -142,3 +142,164 @@ end
 #     algorithm=:iv_legacy,
 # )
 # @test givmodel_uu.coef ≈ [1.0442, 0.9967, 4.2707, 0.7597] atol = 1e-4
+
+#============== test build_error_function ==============#
+@testset "build_error_function validation" begin
+    using OptimalGIV: build_error_function
+
+    # Test 1: Homogeneous elasticity with scalar_search
+    @testset "scalar_search algorithm" begin
+        f = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+
+        # First estimate the model
+        givmodel = giv(
+            df, f, :id, :t, :absS;
+            guess=Dict("Aggregate" => 2.0),
+            algorithm=:scalar_search,
+            tol=1e-6
+        )
+
+        # Build the error function
+        err_func, components = build_error_function(
+            df, f, :id, :t, :absS;
+            algorithm=:scalar_search
+        )
+        # The aggregate elasticity (ζS) should yield zero error
+        # For scalar_search, the error function takes ζS directly
+        givmodel.agg_coef
+        err = err_func(givmodel.agg_coef)
+        @test abs(err[2]) < 1e-6  # Should be very close to zero
+    end
+
+    # Test 2: Homogeneous elasticity with iv algorithm
+    @testset "iv algorithm" begin
+        f = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+
+        # Estimate the model
+        givmodel = giv(
+            df, f, :id, :t, :absS;
+            guess=[1.0],
+            algorithm=:iv,
+            tol=1e-6
+        )
+
+        # Build the error function
+        err_func, components = build_error_function(
+            df, f, :id, :t, :absS;
+            algorithm=:iv
+        )
+
+        # Extract just the elasticity coefficients (not the factor loadings)
+        ζ = givmodel.coef
+
+        # The error function should return zero for the estimated coefficients
+        err = err_func(ζ)
+        @test norm(err, Inf) < 1e-6  # Should be very close to zero vector
+    end
+
+    # Test 3: Homogeneous elasticity with debiased_ols algorithm
+    @testset "debiased_ols algorithm" begin
+        f = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+
+        # Estimate the model
+        givmodel = giv(
+            df, f, :id, :t, :absS;
+            guess=[1.0],
+            algorithm=:debiased_ols,
+        )
+
+        # Build the error function
+        err_func, components = build_error_function(
+            df, f, :id, :t, :absS;
+            algorithm=:debiased_ols
+        )
+
+        # Extract just the elasticity coefficients
+        ζ = givmodel.coef
+
+        # The error function should return zero for the estimated coefficients
+        err = err_func(ζ)
+        @test norm(err) < 1e-6  # Should be very close to zero vector
+    end
+
+    # Test 4: Heterogeneous elasticity with scalar_search
+    @testset "heterogeneous elasticity - scalar_search" begin
+        f_het = @formula(q + id & endog(p) ~ 0 + id & (η1 + η2))
+
+        givmodel = giv(
+            df, f_het, :id, :t, :absS;
+            guess=Dict("Aggregate" => 2.5),
+            algorithm=:scalar_search,
+        )
+
+        err_func, components = build_error_function(
+            df, f_het, :id, :t, :absS;
+            algorithm=:scalar_search
+        )
+
+        # For scalar_search with heterogeneous elasticity, 
+        # the aggregate elasticity should still yield zero error
+        err = err_func(givmodel.agg_coef)
+        @test abs(err[2]) < 1e-10
+    end
+
+    # Test 5: Heterogeneous elasticity with iv algorithm
+    @testset "heterogeneous elasticity - iv" begin
+        f_het = @formula(q + id & endog(p) ~ 0 + fe(id) & (η1 + η2))
+
+        givmodel = giv(
+            df, f_het, :id, :t, :absS;
+            guess=ones(5),
+            algorithm=:iv,
+            tol=1e-8,
+        )
+
+        err_func, components = build_error_function(
+            df, f_het, :id, :t, :absS;
+            algorithm=:iv
+        )
+
+        # Extract elasticity coefficients (first 5 for 5 categories)
+        ζ = givmodel.coef
+
+        err = err_func(ζ)
+        @test norm(err, Inf) < 1e-8
+    end
+
+    # Test 6: Heterogeneous elasticity with debiased_ols
+    @testset "heterogeneous elasticity - debiased_ols" begin
+        f_het = @formula(q + id & endog(p) ~ 0 + fe(id) & (η1 + η2))
+
+        givmodel = giv(
+            df, f_het, :id, :t, :absS;
+            guess=ones(5),
+            algorithm=:debiased_ols,
+            tol=1e-8,
+        )
+
+        err_func, components = build_error_function(
+            df, f_het, :id, :t, :absS;
+            algorithm=:debiased_ols
+        )
+
+        ζ = givmodel.coef
+        err = err_func(ζ)
+        @test norm(err, Inf) < 1e-8
+    end
+
+    # Test 7: Test that wrong coefficients give non-zero error
+    @testset "wrong coefficients yield non-zero error" begin
+        f = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+
+        err_func, components = build_error_function(
+            df, f, :id, :t, :absS;
+            algorithm=:iv
+        )
+
+        # Test with wrong coefficient (should NOT be zero)
+        wrong_ζ = [0.5]  # Arbitrary wrong value
+        err = err_func(wrong_ζ)
+        @test norm(err) > 1e-3  # Should be significantly different from zero
+    end
+
+end

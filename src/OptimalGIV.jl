@@ -33,7 +33,7 @@ include("simulation.jl")
 export GIVModel
 export @formula, endog
 export giv,
-    estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames
+    estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, build_error_function
 export coef,
     coefnames,
     coeftable,

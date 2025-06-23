@@ -20,13 +20,13 @@ function estimate_giv(
     obs_index,
     ::Val{:scalar_search};
     guess=nothing,
-    constraints = nothing,
-    tol = 1e-6,
+    constraints=nothing,
     quiet = false,
     complete_coverage=true,
-    solver_options = (;),
+    solver_options=(; ftol=1e-6),
     kwargs...,
 )
+    tol = solver_options.ftol
     # Check if panel is balanced before proceeding
     N, T = obs_index.N, obs_index.T
 
