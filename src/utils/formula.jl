@@ -2,10 +2,12 @@ eachterm(@nospecialize(x::AbstractTerm)) = (x,)
 eachterm(@nospecialize(x::NTuple{N,AbstractTerm})) where {N} = x
 
 const ENDOG_CONTEXT = Any
+struct GIVSlopeModel <: StatisticalModel end
 
 struct EndogenousTerm{T} <: AbstractTerm
     x::T
 end
+StatsModels.terms(t::EndogenousTerm) = [t.x]
 StatsModels.termvars(t::EndogenousTerm) = [Symbol(t.x)]
 endog(x::Symbol) = EndogenousTerm(term(x))
 endog(x::Term) = EndogenousTerm(x)
@@ -50,29 +52,60 @@ replace_function_term(@nospecialize(t::Tuple)) = replace_function_term.(t)
 replace_function_term(@nospecialize(t::FormulaTerm)) =
     FormulaTerm(replace_function_term(t.lhs), replace_function_term(t.rhs))
 
-function parse_endog(@nospecialize(f::FormulaTerm))
+
+function separate_giv_ols_fe_formulas(df, formula; contrasts=Dict{Symbol,Any}())
+    formula_givcore, formula = parse_giv_formula(formula)
+
+    # parse fixed effects
+    if !omitsintercept(formula) & !hasintercept(formula)
+        formula = FormulaTerm(formula.lhs, InterceptTerm{true}() + formula.rhs)
+    end
+    formula_nofe, formula_fes = parse_fe(formula)
+
+    fes, feids, fekeys = parse_fixedeffect(df, formula_fes)
+    has_fe_intercept = any(fe.interaction isa UnitWeights for fe in fes)
+    if has_fe_intercept
+        formula_nofe = FormulaTerm(formula_nofe.lhs, tuple(InterceptTerm{false}(), (term for term in eachterm(formula_nofe.rhs) if !isa(term, Union{ConstantTerm,InterceptTerm}))...))
+    end
+    s = schema(formula_nofe, df, contrasts)
+    formula_schema = apply_schema(formula_nofe, s, GIVModel, has_fe_intercept)
+
+    return formula_givcore, formula_schema, fes, feids, fekeys
+end
+
+function parse_giv_formula(@nospecialize(f::FormulaTerm))
     if has_endog(f.rhs)
         throw(ArgumentError("Formula contains endogenous terms on the right-hand side"))
     end
     if has_endog(f.lhs)
         endog_terms = Tuple(term for term in eachterm(f.lhs) if has_endog(term))
-        exog_terms = eachterm(f.rhs)
         response_terms = filter(!has_endog, eachterm(f.lhs))
         if length(response_terms) > 1
             throw(ArgumentError("Formula contains more than one response term"))
         end
         response_term = response_terms[1]
-        separated_terms = [separate_slope_from_endog(term) for term in endog_terms]
-        slope_terms = Tuple(term[1] for term in separated_terms)
-        endog_terms = [term[2] for term in separated_terms]
-        if length(unique(endogsymbol.(endog_terms))) .> 1
-            throw(ArgumentError("Formula contains more than one endogenous term"))
+        formula_giv = FormulaTerm(response_term, endog_terms + InterceptTerm{false}())
+        # making sure the response term is the first term
+        formula = FormulaTerm(response_term + endog_terms, f.rhs)
+        if has_fe(formula_giv)
+            throw(ArgumentError("Fixed effects are not allowed for endogenous terms"))
         end
-        endog_term = endog_terms[1]
-        return response_term, slope_terms, endog_term, exog_terms
+        return formula_giv, formula
     else
         throw(ArgumentError("Formula does not contain endogenous terms"))
     end
+end
+
+function parse_endog(@nospecialize(f::FormulaTerm))
+    endog_terms = Tuple(term for term in eachterm(f.rhs) if has_endog(term))
+    separated_terms = [separate_slope_from_endog(term) for term in endog_terms]
+    slope_terms = Tuple(term[1] for term in separated_terms)
+    endog_terms = [term[2] for term in separated_terms]
+    if length(unique(endogsymbol.(endog_terms))) .> 1
+        throw(ArgumentError("Formula contains more than one endogenous term"))
+    end
+    endog_term = endog_terms[1]
+    return slope_terms, endog_term
 end
 
 function StatsModels.apply_schema(
@@ -91,23 +124,23 @@ function StatsModels.apply_schema(
     return apply_schema(t.x, sch, Mod)
 end
 
-hint_for_categorical(df) = Dict{Symbol,Any}(Symbol(x) => CategoricalTerm for
-                 x in names(df) if eltype(df[!, x]) <: Union{Int,Bool})
-# ##=============== convert the formula to FixedEffectModel-compatible formula ================##
-# function StatsModels.apply_schema(t::FunctionTerm{typeof(endog)}, sch::StatsModels.Schema, Mod::Type{<:_FEMODEL})
-#     apply_schema(EndogenousTerm(t.args[1]), sch, Mod)
-# end
-# StatsModels.apply_schema(t::EndogenousTerm, schema, Mod::Type{<:_FEMODEL}) = apply_schema(t.x, schema, mod)
+"""
+Adpoted from FixedEffectModels.jl
+"""
+function StatsModels.apply_schema(
+    ft::FormulaTerm,
+    sch::StatsModels.Schema,
+    Mod::Type{GIVModel}, has_fe_intercept
+)
+    # make sure the dummies on lhs always have full rank
+    schema_lhs = StatsModels.FullRank(sch)
+    lhs = apply_schema(ft.lhs, schema_lhs, StatisticalModel)
+    schema_rhs = StatsModels.FullRank(sch)
 
-# function StatsModels.apply_schema(t::AbstractTerm, schema, Mod::Type{<:_ABSTRACTFEMODEL})
-#     println("invoked")
-#     t = apply_schema(t, schema, StatisticalModel)
-#     if isa(t, CategoricalTerm)
-#         t = FixedEffectModels.FixedEffectTerm(t.sym)
-#     end
-#     return t
-# end
+    if has_fe_intercept
+        push!(schema_rhs.already, InterceptTerm{true}())
+    end
+    rhs = collect_matrix_terms(apply_schema(ft.rhs, schema_rhs, StatisticalModel))
+    return FormulaTerm(lhs, rhs)
+end
 
-# function StatsModels.modelcols(e::EndogenousTerm, d::NamedTuple)
-#     col = modelcols(p.)
-# end

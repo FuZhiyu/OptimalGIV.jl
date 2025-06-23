@@ -1,4 +1,3 @@
-
 """
     giv(df, formula, id, t, weight; <keyword arguments>)
 
@@ -41,21 +40,38 @@ Estimate the GIV model. It returns a `GIVModel` object containing the estimated 
     (a vector in the case of categorical variables and a number otherwise). In the example above, the initial guess can be provided as
     ```julia
     guess = Dict(:id => [1.0, 2.0], :η => 0.5)
+    ```
+- `exclude_pairs::Dict{Int,Vector{Int}} = Dict()`: A dictionary specifying entity pairs to exclude from the moment conditions. 
+    Keys are entity IDs and values are vectors of entity IDs to exclude. For example:
+    ```julia
+    exclude_pairs = Dict(1 => [2, 3], 4 => [5])  # Exclude pairs (1,2), (1,3), (4,5)
+    ```
 - `algorithm::Symbol = :iv`: The algorithm to use for estimation. The default is `:iv`. The options are
-    - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0
-    - `:iv_vcov`: `:iv_vcov` uses the same set of moment conditions as `:iv` but precomputes the covariance matrices 
-    once and use them during the iteration. Constant weighting across time is required. 
+    - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0. 
+    This algorithm uses an identity to achieve O(N) computational complexity.
+    - `:iv_twopass`: Numerically identical to `:iv` but uses a more straightforward O(N²) implementation. 
+    Useful for debugging or when the O(N) trick causes numerical issues.
     - `:debiased_ols`: `:debiased_ols` uses the moment condition such that E[u_i C_it p_it] = 1/ζ_St σ_i^2. ]
     It requires the adding-up constraint is satisifed so that Σ_i (q_it weight_i) = 0. 
     If not, the aggregate elasticity will be underestimated.
     - `:scalar_search`: `:scalar_search` uses the same moment condition `up` but requires the aggregate elasticity be constant across time. 
     It searches for the scalar of the aggregate elasticity and hence very efficient. 
     It can be used for diagnoises or forming initial guess for other algorithms. 
-- `solver_options`: Options to pass to the `nlsolve`. 
-- `quiet::Bool = false`: If `true`, suppress warnings and information.
-
-  - `savedf::Bool = true`: If `true`, the input dataframe is saved in the field `df` of the returned `GIVModel` object. By default, it is `true`. For large datasets or repeated estimation, it is recommended to set it to `false`.
-
+- `quiet::Bool = false`: If `true`, suppress warnings and information messages.
+- `save::Symbol = :none`: Controls what additional information to save:
+    - `:none`: Save only the coefficients and standard errors (default)
+    - `:residuals`: Save residuals in the returned model
+    - `:fe`: Save fixed effects estimates
+    - `:all`: Save both residuals and fixed effects
+- `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
+    If `nothing` (default), automatically detected by checking the market clearing condition. 
+    Can be manually set to `true` or `false` for debugging purposes.
+- `return_vcov::Bool = true`: Whether to calculate and return the variance-covariance matrix.
+- `contrasts::Dict{Symbol,Any} = Dict()`: Contrasts specification for categorical variables (following StatsModels.jl conventions). Untested. Use with caution.
+- `tol::Float64 = 1e-6`: Convergence tolerance for the solver and fixed effects.
+- `iterations::Int = 100`: Maximum number of iterations for the solver.
+- `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
+    Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
 
 # Output
 
@@ -75,257 +91,219 @@ function giv(
     formula::FormulaTerm,
     id::Symbol,
     t::Symbol,
-    weight::Union{Symbol,Nothing} = nothing;
-    guess = nothing,
-    exclude_pairs = Pair[],
+    weight::Union{Symbol,Nothing}=nothing;
+    guess=nothing,
+    exclude_pairs=Dict{Int,Vector{Int}}(),
     algorithm=:iv,
-    solver_options = (;),
-    quiet = false,
-    savedf = true,
-    return_vcov = true,
+    quiet=false,
+    save=:none, # :all or :fe or :none or :residuals
+    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
+    return_vcov=true,
+    contrasts=Dict{Symbol,Any}(), # not tested; 
+    tol=1e-6,
+    iterations=100,
+    solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
-    df = preprocess_dataframe(df, formula, id, t, weight; quiet = quiet)
-    slope_coefnames, factor_coefnames, endog_name, response_name = get_coefnames(df, formula)
+    df = preprocess_dataframe(df, formula, id, t, weight)
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    # regress the left-hand side q, and Cp on the right-hand side
 
-    if length(exclude_pairs) > 0 && solver_options in [:debiased_ols, :scalar_search]
-        @error("Moment exclusion not supported for the selected algorithm. 
-        Proceed without `exclude_pairs`")
+    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+
+    X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
+    Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    q, Cp = Y_original[:, 1], Y_original[:, 2:end]
+    Y_feres, X_feres, β_ols, residuals, feM = ols_with_fixed_effects(Y_original, X_original, fes; tol=tol)
+
+    uq, uCp = residuals[:, 1], residuals[:, 2:end]
+
+    S = df[!, weight]
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
+    C = modelcols(collect_matrix_terms(formula_slope), df)
+    @assert size(C, 2) == size(Cp, 2)
+
+    N = obs_index.N
+    Nζ = size(C, 2)
+    Nβ = size(X_original, 2)
+
+    if isnothing(complete_coverage)
+        complete_coverage = check_market_clearing(q, S, obs_index)
     end
-    qmat, pmat, Cts, Cpts, ηts, Smat, exclmat = generate_matrices(
-        df,
-        formula,
-        id,
-        t,
-        weight;
-        algorithm = algorithm,
-        quiet = quiet,
-        exclude_pairs = exclude_pairs,
-    )
-    N, T, Nmom = size(Cts)
+    if !quiet &&
+       algorithm ∈ [:scalar_search, :debiased_ols] &&
+       !complete_coverage
+        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    end
 
-    # residualize against η
-    η = reshape(ηts, N * T, :)
-    cholη = cholesky(η' * η)
-    uq, λq_endog = residualize_on_η(vec(qmat), η, cholη)
-    uqmat = reshape(uq, N, T)
-    uCp, λCp = residualize_on_η(reshape(Cpts, N * T, Nmom), η, cholη)
-    uCpts = reshape(uCp, N, T, Nmom)
-
-    guessvec = parse_guess(formula, guess, Val{algorithm}())
+    guessvec = parse_guess(elasticity_names, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
-        uqmat,
-        uCpts,
-        Cts,
-        Smat,
-        exclmat,
+        uq,
+        uCp,
+        C,
+        S,
+        obs_index,
         Val{algorithm}();
-        guess = guessvec,
-        quiet = quiet,
-        solver_options = solver_options,
+        guess=guessvec,
+        quiet=quiet,
+        complete_coverage=complete_coverage,
+        solver_options=solver_options,
     )
+    β_q = β_ols[:, 1]
+    β_Cp = β_ols[:, 2:end]
+    β = β_q + β_Cp * ζ̂
 
-    λ = λq_endog + λCp * ζ̂
-
-    ûmat = uqmat + dropdims(sum(uCpts .* reshape(ζ̂, 1, 1, length(ζ̂)); dims = 3); dims = 3)
+    û = uq + uCp * ζ̂
     if return_vcov
-        σu²vec, Σζ = solve_vcov(ζ̂, ûmat, Smat, Cts)
-        ols_vcov = solve_ols_vcov(ûmat, ηts)
-        Σλ = ols_vcov + λCp * Σζ * λCp'
+        if complete_coverage
+            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+        else
+            # without complete coverage of the market, we do not have aggregate elasticity
+            # and hence it's not exactly optimal
+            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
+        end
+        if size(X_feres, 2) > 0
+            ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
+            Σβ = ols_vcov + β_Cp * Σζ * β_Cp'
+        else
+            Σβ = zeros(0, 0)
+        end
     else
-        σu²vec, Σζ, Σλ = NaN * zeros(N), NaN * zeros(Nmom, Nmom), NaN * zeros(Nmom, Nmom)
+        σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nζ, Nζ), NaN * zeros(Nβ, Nβ)
     end
-    coefdf = create_coef_dataframe(df, formula, [ζ̂; λ], [slope_coefnames; factor_coefnames], id)
+    coef = [ζ̂; β]
+    coef_names = [elasticity_names; covariates_names]
+    vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
+    coefdf = create_coef_dataframe(df, formula_schema, coef, id)
+    if (save == :all || save == :fe) && length(feids) > 0
+        fedf = select(df, fekeys)
+        fedf = retrieve_fixedeffects!(fedf, Y_original * [one(eltype(ζ̂)); ζ̂] - X_original * β, feM, feids)
+        unique!(fedf, fekeys)
+        coefdf = innerjoin(coefdf, fedf; on=intersect(names(coefdf), names(fedf)))
+    end
 
-    ζS = solve_aggregate_elasticity(ζ̂, Cts, Smat)
+
+    ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
 
-    dof = length(ζ̂) + length(λ)
-    dof_residual = N * T - dof
+    dof = length(ζ̂) + length(β)
+    dof_residual = nrow(df) - dof
 
-    if savedf
-        df = innerjoin(df, coefdf; on = intersect(names(df), names(coefdf)))
-
-        aggdf = select(df, t) |> unique
-        aggsym = Symbol(endog_name, "coef_agg")
-        if string(aggsym) in names(df)
-            throw(ArgumentError("The column name $(aggsym) already exists in the dataframe. Please rename it to avoid conflict."))
-        end
-        aggdf[!, Symbol(endog_name, "coef_agg")] .= ζS
-        df = innerjoin(df, aggdf; on = t)
-        sort!(df, [t, id])
-        ressym = Symbol(response_name, "_residual")
-        if string(ressym) in names(df)
-            throw(ArgumentError("The column name $(ressym) already exists in the dataframe. Please rename it to avoid conflict."))
-        end
-        df[!, Symbol(response_name, "_residual")] = vec(ûmat)
-
-        meansym = Symbol(response_name, "_mean")
-        if string(meansym) in names(df)
-            throw(ArgumentError("The column name $(meansym) already exists in the dataframe. Please rename it to avoid conflict."))
-        end
+    if save == :residuals || save == :all
+        resdf = select(df, id, t)
+        resdf[!, Symbol(response_name, "_residual")] = û
+        resdf = innerjoin(resdf, coefdf; on=intersect(names(resdf), names(coefdf)))
+        sort!(resdf, [t, id])
     else
-        df = nothing
+        resdf = nothing
     end
-
     return GIVModel(
-        ζ̂,
-        Σζ,
-        λ,
-        Σλ,
-        λCp,
+        coef,
+        vcov,
+        Nζ,
+        Nβ,
         σu²vec,
         ζS,
+        complete_coverage,
+
         formula,
         response_name,
         endog_name,
-        slope_coefnames,
-        factor_coefnames,
+        coef_names,
+
         id,
         t,
         weight,
         exclude_pairs,
+
         coefdf,
-        df,
+        resdf,
+
         converged,
         N,
-        T,
-        N * T,
+        obs_index.T,
+        nrow(df),
         dof,
         dof_residual,
     )
 end
 
-function get_coefnames(df, formula)
-    dfschema = schema(df, hint_for_categorical(df))
-    response_term, slope_terms, endog_term, exog_terms = parse_endog(formula)
-    slope_coefnames = apply_schema(slope_terms, FullRank(dfschema), GIVModel) |> coefnames
-    if isa(slope_coefnames, String)
-        slope_coefnames = [slope_coefnames]
-    end
-    slope_coefnames = replace(slope_coefnames, "(Intercept)" => "Constant")
+"""
+    get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
 
-    factor_coefnames = apply_schema(exog_terms, FullRank(dfschema), GIVModel) |> coefnames
-    if isa(factor_coefnames, String)
-        factor_coefnames = [factor_coefnames]
-    end
-    endog_name = apply_schema(endog_term, FullRank(dfschema), GIVModel) |> coefnames
-    response_name = apply_schema(response_term, FullRank(dfschema), GIVModel) |> coefnames
-    return slope_coefnames, factor_coefnames, endog_name, response_name
+A convenience function to obtain the name of variables from the original formula. 
+"""
+function get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    return get_coefnames(formula_givcore, formula_schema)
 end
 
-function preprocess_dataframe(df, formula, id, t, weight; quiet = false)
+function get_coefnames(formula_givcore, formula_schema)
+    slope_terms, endog_term = parse_endog(formula_givcore)
+    endog_name = string(endogsymbol(endog_term))
 
+    response_name = coefnames(formula_schema.lhs)[1]
+    elasticity_names = coefnames(formula_schema.lhs)[2:end]
+    covariates_names = coefnames(formula_schema.rhs)
+
+    return response_name, endog_name, elasticity_names, covariates_names, slope_terms
+end
+
+
+function retrieve_fixedeffects!(fedf, u, feM, feids; tol=1e-6, maxiter=100)
+    newfes, b, c = solve_coefficients!(u, feM; tol=tol, maxiter=maxiter)
+    for j in eachindex(newfes)
+        fedf[!, feids[j]] = newfes[j]
+    end
+    return fedf
+end
+
+function preprocess_dataframe(df, formula, id, t, weight)
     # check data compatibility
     allvars = StatsModels.termvars(formula)
-    df = select(df, unique([id, t, weight, allvars...])) |> disallowmissing!
-
+    df = select(df, unique([id, t, weight, allvars...]))
+    dropmissing!(df)
     if any(nonunique(df, [id, t]))
         throw(ArgumentError("Observations are not uniquely identified by `id` and `t`"))
     end
+    # check if any id has less than 2 observations
+    if any(x -> nrow(x) < 2, groupby(df, id))
+        throw(ArgumentError("Some entities have less than 2 observations. Please remove them."))
+    end
 
-    N, T = length(unique(df[!, id])), length(unique(df[!, t]))
-    nrow(df) == N * T || throw(ArgumentError("Only balanced panel is supported for now"))
     all(df[!, weight] .>= 0) ||
         throw(ArgumentError("Weight must be non-negative. You can swap the sign of y and S if necessary."))
     sort!(df, [t, id])
     return df
 end
 
-function generate_matrices(
-    df,
-    formula,
-    id,
-    t,
-    weight;
-    algorithm=:iv,
-    quiet = false,
-    exclude_pairs = Pair[],
-)
-    # check data compatibility
-    dfschema = StatsModels.schema(df, hint_for_categorical(df))
-    N, T = length(unique(df[!, id])), length(unique(df[!, t]))
-    (issorted(df, [t, id]) && nrow(df) == N * T) ||
-        throw(ArgumentError("Only balanced panel is supported for now"))
-    response_term, slope_terms, endog_term, exog_terms = parse_endog(formula)
-    q = modelcols(apply_schema(response_term, dfschema, GIVModel), df)
-    qmat = reshape(q, N, T)
-    p = modelcols(apply_schema(endog_term, dfschema, GIVModel), df)
-    pmat = reshape(p, N, T)
-    if norm(var(pmat; dims = 1)) > eps(eltype(pmat))
-        throw(ArgumentError("Price has to be constant across entities"))
-    end
-    # form a dictionary mapping from id to ind:
-    idvec = df[1:N, id]
-    id2ind = Dict(idvec[i] => i for i in 1:N)
-    exclmat = zeros(Bool, N, N)
-    for (id1, id2vec) in exclude_pairs
-        for id2 in id2vec
-            exclmat[id2ind[id1], id2ind[id2]] = true
-            exclmat[id2ind[id2], id2ind[id1]] = true
-        end
-    end
-    exclmat = BitArray(exclmat)
+parse_guess(elasticity_names, guess::Vector{<:Number}, ::Val) = guess
+parse_guess(elasticity_names, ::Nothing, ::Val) = nothing
+parse_guess(elasticity_names, guess::Number, ::Val) = [guess]
 
-    slope_terms = MatrixTerm(apply_schema(slope_terms, FullRank(dfschema), GIVModel))
-    C = modelcols(slope_terms, df)
-
-    Nmom = size(C, 2)
-    Cts = reshape(C, N, T, Nmom)
-    if all(x -> iszero(x) || isone(x), Cts)
-        Cts = BitArray(Cts)
-    end
-    Cpts = Cts .* pmat
-    exog_terms = apply_schema(exog_terms, FullRank(dfschema), GIVModel) |> MatrixTerm
-    η = modelcols(exog_terms, df)
-    ηts = reshape(η, N, T, size(η, 2))
-
-    S = df[!, weight]
-    Smat = reshape(S, N, T)
-
-    if !quiet &&
-       algorithm ∈ [:scalar_search, :debiased_ols] &&
-       any(>(eps(eltype(qmat))), sum(qmat .* Smat; dims = 1) .^ 2)
-        @warn ("Adding-up constraints not satisfied. `up` and `scalar_search` algorithms may be biased.")
-    end
-
-    return qmat, pmat, Cts, Cpts, ηts, Smat, exclmat
-end
-
-parse_guess(formula, guess::Union{Nothing,Vector}, ::Val) = guess
-
-function parse_guess(formula, guess::Dict, ::Val{:scalar_search})
+function parse_guess(elasticity_names, guess::Dict, ::Val{:scalar_search})
     if "Aggregate" ∉ keys(guess)
         throw(ArgumentError("To use the scalar-search algorithm, specify the initial guess using \"Aggregate\" as the key in `guess`"))
     end
-    return guess["Aggregate"]
+    return parse_guess(elasticity_names, guess["Aggregate"], Val(:scalar_search))
 end
 
-function parse_guess(formula, guess::Dict, ::Any)
-    guess = Dict(Symbol(x) => y for (x, y) in guess)
-    response_term, slope_terms, endog_term, exog_terms = parse_endog(formula)
-    return mapreduce(vcat, slope_terms) do term
-        termsym = Symbol(term)
-        if termsym == Symbol("1")
-            termsym = :Constant
-        end
-        if string(termsym) ∉ string.(keys(guess))
-            throw(ArgumentError("Initial guess for \"$(termsym)\" is missing"))
+function parse_guess(elasticity_names, guess::Dict, ::Any)
+    guess = Dict(string(k) => v for (k, v) in pairs(guess))
+    return map(elasticity_names) do elasticity_name
+        if elasticity_name ∉ keys(guess)
+            throw(ArgumentError("Initial guess for \"$(elasticity_name)\" is missing"))
         else
-            isa(guess[termsym], Number) ? [guess[termsym]] : guess[termsym]
+            return guess[elasticity_name]
         end
     end
 end
 
-function create_coef_dataframe(df, formula, coef, coefname, id)
-    disallowmissing!(df, [Symbol(id); StatsModels.termvars(formula)])
-    f_endog = FormulaTerm(
-        ConstantTerm(0),
-        Tuple(term for term in eachterm(formula.lhs) if has_endog(term)),
-    )
-    dfschema = StatsModels.schema(df, hint_for_categorical(df))
-    slope_terms = eachterm(apply_schema(f_endog.rhs, FullRank(dfschema), GIVModel))
-    exog_terms = eachterm(apply_schema(formula.rhs, FullRank(dfschema), GIVModel))
+function create_coef_dataframe(df, formula_schema, coef, id)
+    slope_terms = eachterm(formula_schema.lhs[2:end])
+    exog_terms = eachterm(formula_schema.rhs.terms)
     terms = [slope_terms..., exog_terms...]
     categorical_terms_symbol = Symbol[]
     cat_symbol(t::CategoricalTerm) = [Symbol(t)]
@@ -341,89 +319,154 @@ function create_coef_dataframe(df, formula, coef, coefname, id)
     for term in terms
         termsym = Symbol(term)
         coefsym = Symbol(termsym, :_coef)
-        coefnamecol = Symbol(termsym, :_coefname)
+        # coefnamecol = Symbol(termsym, :_coefname)
         if has_categorical(term)
             if term isa InteractionTerm
                 term = InteractionTerm((x for x in term.terms if x isa CategoricalTerm))
             end
             catmat = modelcols(term, categories)
-            termcoef = coef[i:i+size(catmat)[2]-1]
-            termcoefname = coefname[i:i+size(catmat)[2]-1]
+            Nlevels = size(catmat)[2]
+            termcoef = coef[i:i+Nlevels-1]
             termmat = modelcols(term, categories)
             categories[!, coefsym] = termmat * termcoef
-            categories[!, coefnamecol] = termcoefname[findfirst.(eachrow(Bool.(termmat)))]
-            i += size(catmat)[2]
+            i += Nlevels
         elseif term isa InterceptTerm{false}
             continue
         else
             categories[!, coefsym] .= coef[i]
-            categories[!, coefnamecol] .= coefname[i]
             i += 1
         end
     end
     if i != length(coef) + 1
-        println(length(coef))
         throw(ArgumentError("Number of coefficients does not match the number of terms. You may be using different formula or dataframe for estimation and creating coef dataframe."))
     end
 
     return categories
 end
 
+
+function create_exclusion_matrix(id_values, exclude_pairs)
+    # Create mapping from id to index
+    id2ind = Dict(id_values[i] => i for i in 1:length(id_values))
+    N = length(id_values)
+    # Initialize exclusion matrix
+    exclmat = zeros(Bool, N, N)
+
+    # Fill in exclusions based on provided pairs
+    for (id1, id2vec) in exclude_pairs
+        i = id2ind[id1]
+        for id2 in id2vec
+            j = id2ind[id2]
+            exclmat[i, j] = true
+            exclmat[j, i] = true  # Make it symmetric
+        end
+    end
+
+    return BitArray(exclmat)
+end
+
 """
-    predict_endog(m::GIVModel; <keyword arguments>)
+Check if the market clearing condition (adding-up constraint) is satisfied for each time period.
 
-Predict the endogenous variable based on the estimated GIV model.
-
-# Arguments
-
-- `m::GIVModel`: The estimated GIV model.
-- `df::DataFrame`: The dataframe to predict the endogenous variable. 
-    It uses the saved dataframe in `m` by default. A different dataframe can be used for prediction to construct counterfactuals.
-
-## Keyword Arguments
-- `coef::Vector{Float64}`: The estimated coefficients. 
-    It uses the coefficients in `m` by default. A different set of coefficients can be
-    used to construct counterfactuals.
-- `factor_coef::Vector{Float64}`: The estimated factor coefficients.
-    It uses the factor coefficients in `m` by default. A different set of factor coefficients can be
-    used to construct counterfactuals.
-- `residual::Symbol`: The name of the residual column in the dataframe. 
-    By default it uses the estimated residual; different residuals can be used to construct counterfactuals.
-- `formula::FormulaTerm`: The formula used to estimate the model.
-- `id::Symbol`: The name of the entity identifier.
-- `t::Symbol`: The name of the time identifier.
-- `weight::Symbol`: The name of the weight variable.
+Returns true if the constraint is violated in any period.
 """
-function predict_endog(
-    m::GIVModel,
-    df = m.df;
-    coef = m.coef,
-    factor_coef = m.factor_coef,
-    residual = Symbol(m.responsename, "_residual"),
-    formula = m.formula,
-    id = m.idvar,
-    t = m.tvar,
-    weight = m.weightvar,
-    quiet = false,
+function check_market_clearing(q, S, obs_index)
+    for t in 1:obs_index.T
+        start_idx = obs_index.start_indices[t]
+        end_idx = obs_index.end_indices[t]
+
+        # Skip empty time periods
+        if start_idx == 0 || end_idx == 0
+            continue
+        end
+
+        # Calculate the sum of q*S for this time period
+        weighted_sum = 0.0
+        for idx in start_idx:end_idx
+            weighted_sum += q[idx] * S[idx]
+        end
+
+        # Check if sum exceeds tolerance
+        if weighted_sum^2 > eps(eltype(q))
+            return false  # Constraint violated
+        end
+    end
+
+    return true  # No violations found
+end
+
+"""
+    build_error_function(df, formula, id, t, weight; <keyword arguments>)
+
+Export the error function for the GIV model. This function is useful for debugging and customized solvers. 
+"""
+function build_error_function(df,
+    formula::FormulaTerm,
+    id::Symbol,
+    t::Symbol,
+    weight::Union{Symbol,Nothing}=nothing;
+    exclude_pairs=Dict{Int,Vector{Int}}(),
+    algorithm=:iv,
+    quiet=false,
+    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
+    contrasts=Dict{Symbol,Any}(), # not tested; 
+    tol=1e-6,
+    kwargs...
 )
-    if isnothing(df)
-        throw(ArgumentError("DataFrame not saved. Rerun the model with `savedf = true`"))
-    end
-    # add residual to the rhs
-    formula = FormulaTerm(formula.lhs, tuple(eachterm(formula.rhs)..., Term(residual)))
-    factor_coef = [factor_coef; one(eltype(factor_coef))]
+    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    matricies = generate_matrices(df, formula, id, t, weight)
-    qmat, pmat, Cts, Cpts, ηts, Smat = matricies
-    N, T, Nmom = size(Cts)
-    mkc_err = sum(qmat .* Smat; dims = 1) .^ 2
-    if !quiet && any(>(eps(eltype(qmat))), mkc_err)
-        @warn ("Adding-up constraints not satisfied. Interpret the results with caution.")
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    # regress the left-hand side q, and Cp on the right-hand side
+
+    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+
+    X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
+    Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    q, Cp = Y_original[:, 1], Y_original[:, 2:end]
+    Y_feres, X_feres, β_ols, residuals, feM = ols_with_fixed_effects(Y_original, X_original, fes; tol=tol)
+
+    uq, uCp = residuals[:, 1], residuals[:, 2:end]
+
+    S = df[!, weight]
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
+    C = modelcols(collect_matrix_terms(formula_slope), df)
+
+    if isnothing(complete_coverage)
+        complete_coverage = check_market_clearing(q, S, obs_index)
     end
-    aggcoef = solve_aggregate_elasticity(coef, Cts, Smat)
-    λη = reshape(ηts, N * T, :) * factor_coef
-    netshock = reshape(λη, N, T)
-    shockS = sum(netshock .* Smat; dims = 1) |> vec
-    pvec = shockS ./ aggcoef
-    return pvec
+    if !quiet &&
+       algorithm ∈ [:scalar_search, :debiased_ols] &&
+       !complete_coverage
+        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    end
+    if algorithm == :scalar_search
+        # Check if panel is balanced before proceeding
+        N, T = obs_index.N, obs_index.T
+
+        # Verify that we have a balanced panel (N*T observations)
+        if length(q) != N * T
+            throw(ArgumentError("Scalar search algorithm requires a balanced panel"))
+        end
+
+        # Reshape stacked vectors back to matrices/tensors
+        uqmat = reshape(uq, N, T)
+
+        # For C, reshape from (N*T, K) to (N, T, K)
+        Nmom = size(C, 2)
+        Cts = BitArray(reshape(C, N, T, Nmom))
+        uCpts = reshape(uCp, N, T, Nmom)
+
+        Smat = reshape(S, N, T)
+
+        # Call the original implementation with reshaped matrices
+        p, S_vec, coefmapping = transform_matricies_for_scalar_search(uCpts, Cts, Smat)
+
+        err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
+        return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
+    else
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}())
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index)
+    end
 end

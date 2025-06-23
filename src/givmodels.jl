@@ -1,22 +1,21 @@
-
 struct GIVModel <: StatisticalModel
     coef::Vector{Float64}
     vcov::Matrix{Float64}
-    factor_coef::Vector{Float64}
-    factor_vcov::Matrix{Float64}
-    price_factor_coef::Matrix{Float64}
+    Nelasticities::Int64
+    Ncovariates::Int64
     residual_variance::Vector{Float64}
     agg_coef::Union{Float64,Vector{Float64}}
+    complete_coverage::Bool
 
     formula::FormulaTerm
     responsename::String
     endogname::String
     coefnames::Vector{String}
-    factor_coefnames::Vector{String}
+
     idvar::Symbol
     tvar::Symbol
     weightvar::Symbol
-    exclude_pairs::Vector{Pair}
+    exclude_pairs::Dict
 
     coefdf::DataFrame
     df::Union{DataFrame,Nothing}
@@ -116,8 +115,67 @@ function Base.show(io::IO, m::GIVModel)
 
     #intert my stuff which requires totwidth
     avgaggcoef = round(mean(m.agg_coef); sigdigits = 3)
-    ctitle = string(typeof(m)) * " (Aggregate coef: $avgaggcoef)"
+    aggstr = m.complete_coverage ? "Aggregate" : "Average"
+    ctitle = string(typeof(m)) * " ($aggstr coef: $avgaggcoef)"
     halfwidth = div(totwidth - length(ctitle), 2)
     println(io, " "^halfwidth * ctitle * " "^halfwidth)
     return show(io, coeftable(m))
+end
+
+struct ObservationIndex
+    start_indices::Vector{Int}  # Starting index for each time period
+    end_indices::Vector{Int}    # Ending index for each time period
+    ids::Vector{Int}            # Entity IDs for each observation
+    entity_obs_indices::Matrix{Int}  # N×T matrix: entity_obs_indices[i,t] = observation index of entity i in period t, or 0 if not present
+    exclpairs::BitMatrix          # N×N matrix: (i,j) pairs that are excluded from moment conditions
+    N::Int                      # Total number of entities 
+    T::Int                      # Total number of time periods
+end
+
+function create_observation_index(df, id, t, exclude_pairs=Dict{Int,Vector{Int}}())
+    # Ensure data is sorted by (time, id)
+    if !issorted(df, [t, id])
+        sort!(df, [t, id])
+    end
+
+    N = length(unique(df[!, id]))
+    T = length(unique(df[!, t]))
+
+    # Get id mapping
+    id_map = Dict(unique(df[!, id]) .=> 1:N)
+    time_map = Dict(unique(df[!, t]) .=> 1:T)
+
+    # Create vectors to store indices
+    start_indices = zeros(Int, T)
+    end_indices = zeros(Int, T)
+    ids = [id_map[row[id]] for row in eachrow(df)]
+
+    # Create matrix to store observation indices for each entity in each period
+    # 0 indicates entity is not present in that period
+    entity_obs_indices = zeros(Int, N, T)
+
+    # Find start and end indices for each time period
+    current_time = time_map[df[1, t]]
+    start_indices[current_time] = 1
+
+    for i in 2:nrow(df)
+        time_idx = time_map[df[i, t]]
+        if time_idx != current_time
+            end_indices[current_time] = i - 1
+            start_indices[time_idx] = i
+            current_time = time_idx
+        end
+    end
+    end_indices[current_time] = nrow(df)
+
+    # Fill the entity_obs_indices matrix
+    for i in 1:nrow(df)
+        entity_id = id_map[df[i, id]]
+        time_id = time_map[df[i, t]]
+        entity_obs_indices[entity_id, time_id] = i  # Store actual observation index
+    end
+
+    exclpairs = create_exclusion_matrix(unique(df[!, id]), exclude_pairs)
+
+    return ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclpairs, N, T)
 end
