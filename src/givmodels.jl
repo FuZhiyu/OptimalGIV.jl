@@ -115,7 +115,8 @@ function Base.show(io::IO, m::GIVModel)
 
     #intert my stuff which requires totwidth
     avgaggcoef = round(mean(m.agg_coef); sigdigits = 3)
-    ctitle = string(typeof(m)) * " (Aggregate coef: $avgaggcoef)"
+    aggstr = m.complete_coverage ? "Aggregate" : "Average"
+    ctitle = string(typeof(m)) * " ($aggstr coef: $avgaggcoef)"
     halfwidth = div(totwidth - length(ctitle), 2)
     println(io, " "^halfwidth * ctitle * " "^halfwidth)
     return show(io, coeftable(m))
