@@ -207,6 +207,7 @@ function giv(
         complete_coverage,
 
         formula,
+        formula_schema,
         response_name,
         endog_name,
         coef_names,

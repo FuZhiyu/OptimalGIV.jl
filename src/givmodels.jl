@@ -8,6 +8,7 @@ struct GIVModel <: StatisticalModel
     complete_coverage::Bool
 
     formula::FormulaTerm
+    formula_schema::FormulaTerm
     responsename::String
     endogname::String
     coefnames::Vector{String}
