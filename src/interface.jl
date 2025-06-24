@@ -97,6 +97,7 @@ function giv(
     algorithm=:iv,
     quiet=false,
     save=:none, # :all or :fe or :none or :residuals
+    save_df=false,
     complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
     return_vcov=true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
@@ -197,6 +198,21 @@ function giv(
     else
         resdf = nothing
     end
+
+    if save_df
+        savedf = df
+        if !isnothing(resdf)
+            savedf[!, Symbol(response_name, "_residual")] = û
+        end
+        savedf = leftjoin(savedf, coefdf, on=intersect(names(savedf), names(coefdf)))
+        if !isnothing(fedf)
+            savedf = leftjoin(savedf, fedf, on=intersect(names(savedf), names(fedf)))
+        end
+        sort!(savedf, [id, t])
+    else
+        savedf = nothing
+    end
+
     return GIVModel(
         coef,
         vcov,
@@ -220,6 +236,7 @@ function giv(
         coefdf,
         fedf,
         resdf,
+        savedf,
 
         converged,
         N,
