@@ -181,9 +181,9 @@ function giv(
         fedf = select(df, fekeys)
         fedf = retrieve_fixedeffects!(fedf, Y_original * [one(eltype(ζ̂)); ζ̂] - X_original * β, feM, feids)
         unique!(fedf, fekeys)
-        coefdf = innerjoin(coefdf, fedf; on=intersect(names(coefdf), names(fedf)))
+    else
+        fedf = nothing
     end
-
 
     ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
@@ -217,6 +217,7 @@ function giv(
         Dict(exclude_pairs),
 
         coefdf,
+        fedf,
         resdf,
 
         converged,
