@@ -21,7 +21,7 @@ struct GIVModel <: StatisticalModel
     coefdf::DataFrame
     fe::Union{DataFrame,Nothing}
     residual_df::Union{DataFrame,Nothing}
-    savedf::Union{DataFrame,Nothing}
+    df::Union{DataFrame,Nothing}
 
     converged::Bool
     N::Int64

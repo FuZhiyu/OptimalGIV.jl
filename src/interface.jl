@@ -318,6 +318,34 @@ function parse_guess(elasticity_names, guess::Dict, ::Any)
     end
 end
 
+"""
+    extract_raw_matrices(df, formula, id, t, weight)
+    
+    Convenient function to extract the raw matrices used for estimation. 
+"""
+function extract_raw_matrices(df, formula, id, t, weight; contrasts=Dict{Symbol,Any}(), exclude_pairs=Dict{Int,Vector{Int}}())
+    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
+    df = preprocess_dataframe(df, formula, id, t, weight)
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    # regress the left-hand side q, and Cp on the right-hand side
+
+    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+
+    X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
+    Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    q, Cp = Y_original[:, 1], Y_original[:, 2:end]
+    # Y_feres, X_feres, β_ols, residuals, feM = ols_with_fixed_effects(Y_original, X_original, fes; tol=tol)
+
+    # uq, uCp = residuals[:, 1], residuals[:, 2:end]
+
+    S = df[!, weight]
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
+    C = modelcols(collect_matrix_terms(formula_slope), df)
+    return q, Cp, C, S, X_original, obs_index
+end
+
 function create_coef_dataframe(df, formula_schema, coef, id)
     slope_terms = eachterm(formula_schema.lhs[2:end])
     exog_terms = eachterm(formula_schema.rhs.terms)
