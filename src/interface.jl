@@ -194,8 +194,6 @@ function giv(
     if save == :residuals || save == :all
         resdf = select(df, id, t)
         resdf[!, Symbol(response_name, "_residual")] = û
-        resdf = innerjoin(resdf, coefdf; on=intersect(names(resdf), names(coefdf)))
-        sort!(resdf, [t, id])
     else
         resdf = nothing
     end

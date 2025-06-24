@@ -18,7 +18,7 @@ struct GIVModel <: StatisticalModel
     exclude_pairs::Dict
 
     coefdf::DataFrame
-    df::Union{DataFrame,Nothing}
+    residual_df::Union{DataFrame,Nothing}
 
     converged::Bool
     N::Int64
