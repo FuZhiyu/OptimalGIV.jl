@@ -1,8 +1,8 @@
 struct GIVModel <: StatisticalModel
     coef::Vector{Float64}
     vcov::Matrix{Float64}
-    Nelasticities::Int64
-    Ncovariates::Int64
+    Nendog::Int64
+    Nexog::Int64
     residual_variance::Vector{Float64}
     agg_coef::Union{Float64,Vector{Float64}}
     complete_coverage::Bool
@@ -32,9 +32,18 @@ struct GIVModel <: StatisticalModel
 end
 
 StatsAPI.coef(m::GIVModel) = m.coef
+endog_coef(m::GIVModel) = m.coef[1:m.Nendog]
+exog_coef(m::GIVModel) = m.coef[m.Nendog+1:end]
+
 StatsAPI.coefnames(m::GIVModel) = m.coefnames
+endog_coefnames(m::GIVModel) = m.coefnames[1:m.Nendog]
+exog_coefnames(m::GIVModel) = m.coefnames[m.Nendog+1:end]
+
 StatsAPI.responsename(m::GIVModel) = m.responsename
+
 StatsAPI.vcov(m::GIVModel) = m.vcov
+endog_vcov(m::GIVModel) = m.vcov[1:m.Nendog, 1:m.Nendog]
+exog_vcov(m::GIVModel) = m.vcov[m.Nendog+1:end, m.Nendog+1:end]
 StatsAPI.nobs(m::GIVModel) = m.nobs
 # StatsAPI.dof(m::GIVModel) = m.dof
 StatsAPI.dof_residual(m::GIVModel) = m.dof_residual
