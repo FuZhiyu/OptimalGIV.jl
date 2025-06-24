@@ -216,7 +216,7 @@ function giv(
         id,
         t,
         weight,
-        exclude_pairs,
+        Dict(exclude_pairs),
 
         coefdf,
         resdf,
