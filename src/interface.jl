@@ -116,7 +116,7 @@ function giv(
     formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
-    response_name, endog_name, elasticity_names, exog_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+    response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
 
     X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
     Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
@@ -145,7 +145,7 @@ function giv(
         throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
     end
 
-    guessvec = parse_guess(elasticity_names, guess, Val{algorithm}())
+    guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
         uq,
         uCp,
@@ -181,8 +181,6 @@ function giv(
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nζ, Nζ), NaN * zeros(Nβ, Nβ)
     end
     coef = [ζ̂; β]
-    coef_names = [elasticity_names; exog_names]
-    vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
     coefdf = create_coef_dataframe(df, formula_schema, coef, id)
     if (save == :all || save == :fe) && length(feids) > 0
         fedf = select(df, fekeys)
@@ -220,10 +218,10 @@ function giv(
     end
 
     return GIVModel(
-        coef,
-        vcov,
-        Nζ,
-        Nβ,
+        ζ̂,
+        β,
+        Σζ,
+        Σβ,
         σu²vec,
         ζS,
         complete_coverage,
@@ -232,7 +230,8 @@ function giv(
         formula_schema,
         response_name,
         endog_name,
-        coef_names,
+        endog_coefnames,
+        exog_coefnames,
 
         id,
         t,
@@ -268,10 +267,10 @@ function get_coefnames(formula_givcore, formula_schema)
     endog_name = string(endogsymbol(endog_term))
 
     response_name = coefnames(formula_schema.lhs)[1]
-    elasticity_names = coefnames(formula_schema.lhs)[2:end]
-    exog_names = coefnames(formula_schema.rhs)
+    endog_coefnames = coefnames(formula_schema.lhs)[2:end]
+    exog_coefnames = coefnames(formula_schema.rhs)
 
-    return response_name, endog_name, elasticity_names, exog_names, slope_terms
+    return response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms
 end
 
 
@@ -302,24 +301,24 @@ function preprocess_dataframe(df, formula, id, t, weight)
     return df
 end
 
-parse_guess(elasticity_names, guess::Vector{<:Number}, ::Val) = guess
-parse_guess(elasticity_names, ::Nothing, ::Val) = nothing
-parse_guess(elasticity_names, guess::Number, ::Val) = [guess]
+parse_guess(endog_coefnames, guess::Vector{<:Number}, ::Val) = guess
+parse_guess(endog_coefnames, ::Nothing, ::Val) = nothing
+parse_guess(endog_coefnames, guess::Number, ::Val) = [guess]
 
-function parse_guess(elasticity_names, guess::Dict, ::Val{:scalar_search})
+function parse_guess(endog_coefnames, guess::Dict, ::Val{:scalar_search})
     if "Aggregate" ∉ keys(guess)
         throw(ArgumentError("To use the scalar-search algorithm, specify the initial guess using \"Aggregate\" as the key in `guess`"))
     end
-    return parse_guess(elasticity_names, guess["Aggregate"], Val(:scalar_search))
+    return parse_guess(endog_coefnames, guess["Aggregate"], Val(:scalar_search))
 end
 
-function parse_guess(elasticity_names, guess::Dict, ::Any)
+function parse_guess(endog_coefnames, guess::Dict, ::Any)
     guess = Dict(string(k) => v for (k, v) in pairs(guess))
-    return map(elasticity_names) do elasticity_name
-        if elasticity_name ∉ keys(guess)
-            throw(ArgumentError("Initial guess for \"$(elasticity_name)\" is missing"))
+    return map(endog_coefnames) do endog_coefname
+        if endog_coefname ∉ keys(guess)
+            throw(ArgumentError("Initial guess for \"$(endog_coefname)\" is missing"))
         else
-            return guess[elasticity_name]
+            return guess[endog_coefname]
         end
     end
 end
@@ -335,7 +334,7 @@ function extract_raw_matrices(df, formula, id, t, weight; contrasts=Dict{Symbol,
     formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
-    response_name, endog_name, elasticity_names, exog_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+    response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
 
     X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
     Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
@@ -469,7 +468,7 @@ function build_error_function(df,
     formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
-    response_name, endog_name, elasticity_names, exog_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+    response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
 
     X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
     Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)

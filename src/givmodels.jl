@@ -1,8 +1,9 @@
 struct GIVModel <: StatisticalModel
-    coef::Vector{Float64}
-    vcov::Matrix{Float64}
-    Nendog::Int64
-    Nexog::Int64
+    endog_coef::Vector{Float64}
+    exog_coef::Vector{Float64}
+    endog_vcov::Matrix{Float64}
+    exog_vcov::Matrix{Float64}
+
     residual_variance::Vector{Float64}
     agg_coef::Union{Float64,Vector{Float64}}
     complete_coverage::Bool
@@ -11,7 +12,9 @@ struct GIVModel <: StatisticalModel
     formula_schema::FormulaTerm
     responsename::String
     endogname::String
-    coefnames::Vector{String}
+
+    endog_coefnames::Vector{String}
+    exog_coefnames::Vector{String}
 
     idvar::Symbol
     tvar::Symbol
@@ -31,19 +34,28 @@ struct GIVModel <: StatisticalModel
     dof_residual::Int64
 end
 
-StatsAPI.coef(m::GIVModel) = m.coef
-endog_coef(m::GIVModel) = m.coef[1:m.Nendog]
-exog_coef(m::GIVModel) = m.coef[m.Nendog+1:end]
+StatsAPI.coef(m::GIVModel) = vcat(endog_coef(m), exog_coef(m))
+endog_coef(m::GIVModel) = m.endog_coef
+exog_coef(m::GIVModel) = m.exog_coef
 
-StatsAPI.coefnames(m::GIVModel) = m.coefnames
-endog_coefnames(m::GIVModel) = m.coefnames[1:m.Nendog]
-exog_coefnames(m::GIVModel) = m.coefnames[m.Nendog+1:end]
+StatsAPI.coefnames(m::GIVModel) = vcat(endog_coefnames(m), exog_coefnames(m))
+endog_coefnames(m::GIVModel) = m.endog_coefnames
+exog_coefnames(m::GIVModel) = m.exog_coefnames
+agg_coef(m::GIVModel) = m.agg_coef
 
 StatsAPI.responsename(m::GIVModel) = m.responsename
 
-StatsAPI.vcov(m::GIVModel) = m.vcov
-endog_vcov(m::GIVModel) = m.vcov[1:m.Nendog, 1:m.Nendog]
-exog_vcov(m::GIVModel) = m.vcov[m.Nendog+1:end, m.Nendog+1:end]
+function StatsAPI.vcov(m::GIVModel)
+    Σζ = endog_vcov(m)
+    Nζ = size(Σζ, 1)
+    Σβ = exog_vcov(m)
+    Nβ = size(Σβ, 1)
+    return [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
+end
+
+endog_vcov(m::GIVModel) = m.endog_vcov
+exog_vcov(m::GIVModel) = m.exog_vcov
+
 StatsAPI.nobs(m::GIVModel) = m.nobs
 # StatsAPI.dof(m::GIVModel) = m.dof
 StatsAPI.dof_residual(m::GIVModel) = m.dof_residual
@@ -66,7 +78,7 @@ StatsAPI.residuals(m::GIVModel, df) = df[!, Symbol(m.responsename, "_residual")]
 function StatsAPI.confint(m::GIVModel; level::Real = 0.95)
     scale = tdistinvcdf(StatsAPI.dof_residual(m), 1 - (1 - level) / 2)
     se = stderror(m)
-    return hcat(m.coef - scale * se, m.coef + scale * se)
+    return hcat(coef(m) - scale * se, coef(m) + scale * se)
 end
 
 function StatsAPI.coeftable(m::GIVModel; level = 0.95)

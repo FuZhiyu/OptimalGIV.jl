@@ -102,6 +102,6 @@ end
         complete_coverage=false, # use the nonoptimal vcov algorithm
     )
 
-    @test maximum(abs,givmodel2.coef - givmodel.coef) < 1e-6
-    @test maximum(abs,givmodel2.vcov - givmodel.vcov) < 1e-6
+    @test maximum(abs, coef(givmodel2) - coef(givmodel)) < 1e-6
+    @test maximum(abs, vcov(givmodel2) - vcov(givmodel)) < 1e-6
 end
