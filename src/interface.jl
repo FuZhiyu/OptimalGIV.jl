@@ -69,6 +69,7 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
     - `:residuals`: Save residuals in the returned model
     - `:fe`: Save fixed effects estimates
     - `:all`: Save both residuals and fixed effects
+- `save_df::Bool = false`: If `true`, the pre-processed estimation DataFrame (including residuals, fixed-effects, and coefficient columns when requested) is stored in the returned model under `df`. This can be useful for post-estimation analysis but increases memory usage.
 - `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
     If `nothing` (default), automatically detected by checking the market clearing condition. 
     Can be manually set to `true` or `false` for debugging purposes.
@@ -83,13 +84,14 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 
 The output is `m::GIVModel`. Several important fields are:
 
-  - `coef`: The estimated coefficients in front of the endogenous terms.
-  - `vcov`: The estimated covariance matrix of the `coef`.
-  - `factor_coef`: The estimated factor coefficients.
-  - `agg_coef`: The estimated aggregate elasticity by `t`. If it is constant across `t`, it is stored as a scalar.
-  - `residual_variance`: The estimated variance of the residual for each `id`.
-  - `coefdf::DataFrame`: A `DataFrame`` containing the estimated coefficients.
-  - `df::DataFrame`: A dataframe contains data used for estimation and the estimates.
+  - `endog_coef`: Coefficients on endogenous terms (vector `ζ̂`).
+  - `exog_coef`: Coefficients on exogenous control variables (vector `β`).
+  - `endog_vcov`: Variance-covariance matrix of `endog_coef`.
+  - `exog_vcov`: Variance-covariance matrix of `exog_coef`.
+  - `agg_coef`: Aggregate (or average) elasticity. Scalar if constant across time, otherwise a vector indexed by `t`.
+  - `residual_variance`: Estimated residual variance for each `id`.
+  - `coefdf::DataFrame`: Tidy DataFrame with entity-specific coefficients (and, when requested, fixed effects).
+  - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
 
 """
 function giv(

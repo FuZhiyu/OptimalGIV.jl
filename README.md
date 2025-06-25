@@ -27,6 +27,7 @@ where $q_{i,t}$ and $p_{t}$ are endogenous, $S$ is the weighting variable $X_S$ 
 
 The model is estimated with the following moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$. See references below for details.
 
+Unbalanced panel is allowed. However, certain algorithms only work with complete coverage ($\sum_{i}S_{i,t}q_{i,t} = 0$ holds in-sample). Cares need to be taken when interpreting the results without complete coverage. 
 
 ## Installation
 
@@ -120,6 +121,7 @@ giv(df, formula, id, t, weight; kwargs...)
   Example: `Dict(1 => [2, 3], 4 => [5])` excludes pairs (1,2), (1,3), and (4,5)
 - `quiet`: Suppress warnings and information messages if true (default: false)
 - `save`: Save additional information - `:none` (default), `:residuals`, `:fe`, or `:all`
+- `save_df`: If true, the full estimation DataFrame (including residuals, coefficients, and fixed-effects columns when requested) is stored in the returned model. Useful for post-estimation analysis.
 - `complete_coverage`: Whether entities in the dataset cover the full market (auto-detected by checking the market clearing condition within the dataset). `scalar_search` and `debiased_ols` algorithms require full-market coverage. One can overwrite it by providing this keyword argument (not recommended; only for debugging). 
 - `return_vcov`: Calculate variance-covariance matrix (default: true)
 - `contrasts`: Contrasts specification for categorical variables (following StatsModels.jl). Untested. Use with cautions.
@@ -133,21 +135,32 @@ The `giv()` function returns a `GIVModel` object with various fields and methods
 
 ```julia
 # Basic statistics
-coef(model)          # Coefficient estimates
-vcov(model)          # Variance-covariance matrix
-stderror(model)      # Standard errors
-confint(model)       # Confidence intervals
-coeftable(model)     # Formatted coefficient table
+coef(model)              # All coefficient estimates (endogenous + exogenous)
+endog_coef(model)        # Coefficients on endogenous terms (ζ)
+exog_coef(model)         # Coefficients on exogenous control variables (β)
+
+agg_coef(model)           # Aggregate (when complete_coverage=false, report average instead) elasticity for each t
+
+vcov(model)              # Full variance-covariance matrix
+endog_vcov(model)        # Variance-covariance of endog_coef
+exog_vcov(model)         # Variance-covariance of exog_coef
+
+stderror(model)          # Standard errors (same order as coef)
+confint(model)           # Confidence intervals
+coeftable(model)         # Formatted coefficient table
 
 # Model information
-nobs(model)          # Number of observations
-dof_residual(model)  # Residual degrees of freedom
-formula(model)       # Model formula
+nobs(model)              # Number of observations
+dof_residual(model)      # Residual degrees of freedom
+formula(model)           # Model formula
 
 # Access specific fields
-model.agg_coef       # Aggregate elasticity (or average elasticity when the coverage is incomplete)
-model.coefdf         # DataFrame with entity-specific coefficients (see below)
-model.converged      # Convergence status
+coefnames(model)         # Names of all coefficients
+endog_coefnames(model)   # Names of endogenous-term coefficients
+exog_coefnames(model)    # Names of exogenous-term coefficients
+
+model.coefdf             # DataFrame with entity-specific coefficients (see below)
+model.converged          # Convergence status
 ```
 
 #### Entity-specific Coefficients DataFrame (`coefdf`)
@@ -223,7 +236,7 @@ guess = Dict("Aggregate" => 2.5)
 
 To see the order of coefficients or get the coefficient labels, one can use the helper function:
 ```julia
-response, endog_name, endog_coefnames, covariate_names, slope_terms = 
+response, endog_name, endog_coefnames, exog_coefnames, slope_terms = 
     get_coefnames(df, formula)
 ```
 
