@@ -233,13 +233,13 @@ function evaluation_metrics(m::GIVModel, df)
         return [missing, missing, missing, missing]
     end
 
-    coefnames = m.coefnames
+    allcoefnames = coefnames(m)
     # estparam = m.coef
     iddf = sort(unique(df, :id), :id)
     trueζ = iddf[!, :ζ]
-    estζ = m.coef[1:m.Nelasticities]
-    Σζ = m.vcov[1:m.Nelasticities, 1:m.Nelasticities]
-    if m.Nelasticities == 1
+    estζ = endog_coef(m)
+    Σζ = endog_vcov(m)
+    if length(endog_coefnames(m)) == 1
         estζ = repeat(estζ, outer=nrow(iddf))
         Σζ = ones(nrow(iddf), nrow(iddf)) * Σζ[1]
     end
@@ -255,15 +255,15 @@ function evaluation_metrics(m::GIVModel, df)
     biasaggζ = estaggζ - trueaggζ
     coveredaggζ = abs(estaggζ - trueaggζ) <= se_aggζ * 1.96
 
-    if length(m.coef) == m.Nelasticities
+    if length(exog_coef(m)) == 0
         return [biasaggζ, se_aggζ, NaN, NaN]
     end
-    estβ = m.coef[m.Nelasticities+1:end]
-    Σβ = m.vcov[m.Nelasticities+1:end, m.Nelasticities+1:end]
+    estβ = exog_coef(m)
+    Σβ = exog_vcov(m)
     K = length(names(iddf, r"η"))
     trueβ = Float64[]
     for k in 1:K
-        if any(occursin.("η$k", coefnames))
+        if any(occursin.("η$k", allcoefnames))
             trueβ = vcat(trueβ, iddf[!, Symbol("λ$k")])
         end
     end

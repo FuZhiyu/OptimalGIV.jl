@@ -2,8 +2,14 @@
     giv(df, formula, id, t, weight; <keyword arguments>)
 
 
-Estimate the GIV model. It returns a `GIVModel` object containing the estimated coefficients, standard errors, and other information.
+Estimate the GIV model given by:
 
+```math
+    q_it +  endog(p_t) × C_it' ζ = X_it' β + u_it
+```
+such that p_t is pinned down by market clearing condition Σ_i (q_it S_it) = 0, and E[u_it u_jt] = 0. 
+
+It returns a `GIVModel` object containing the estimated coefficients, standard errors, and other information.
 
 # Arguments
 
@@ -63,6 +69,7 @@ Estimate the GIV model. It returns a `GIVModel` object containing the estimated 
     - `:residuals`: Save residuals in the returned model
     - `:fe`: Save fixed effects estimates
     - `:all`: Save both residuals and fixed effects
+- `save_df::Bool = false`: If `true`, the pre-processed estimation DataFrame (including residuals, fixed-effects, and coefficient columns when requested) is stored in the returned model under `df`. This can be useful for post-estimation analysis but increases memory usage.
 - `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
     If `nothing` (default), automatically detected by checking the market clearing condition. 
     Can be manually set to `true` or `false` for debugging purposes.
@@ -77,13 +84,14 @@ Estimate the GIV model. It returns a `GIVModel` object containing the estimated 
 
 The output is `m::GIVModel`. Several important fields are:
 
-  - `coef`: The estimated coefficients in front of the endogenous terms.
-  - `vcov`: The estimated covariance matrix of the `coef`.
-  - `factor_coef`: The estimated factor coefficients.
-  - `agg_coef`: The estimated aggregate elasticity by `t`. If it is constant across `t`, it is stored as a scalar.
-  - `residual_variance`: The estimated variance of the residual for each `id`.
-  - `coefdf::DataFrame`: A `DataFrame`` containing the estimated coefficients.
-  - `df::DataFrame`: A dataframe contains data used for estimation and the estimates.
+  - `endog_coef`: Coefficients on endogenous terms (vector `ζ̂`).
+  - `exog_coef`: Coefficients on exogenous control variables (vector `β`).
+  - `endog_vcov`: Variance-covariance matrix of `endog_coef`.
+  - `exog_vcov`: Variance-covariance matrix of `exog_coef`.
+  - `agg_coef`: Aggregate (or average) elasticity. Scalar if constant across time, otherwise a vector indexed by `t`.
+  - `residual_variance`: Estimated residual variance for each `id`.
+  - `coefdf::DataFrame`: Tidy DataFrame with entity-specific coefficients (and, when requested, fixed effects).
+  - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
 
 """
 function giv(
@@ -97,6 +105,7 @@ function giv(
     algorithm=:iv,
     quiet=false,
     save=:none, # :all or :fe or :none or :residuals
+    save_df=false,
     complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
     return_vcov=true,
     contrasts=Dict{Symbol,Any}(), # not tested; 
@@ -109,7 +118,7 @@ function giv(
     formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
-    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+    response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
 
     X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
     Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
@@ -138,7 +147,7 @@ function giv(
         throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
     end
 
-    guessvec = parse_guess(elasticity_names, guess, Val{algorithm}())
+    guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
         uq,
         uCp,
@@ -174,16 +183,14 @@ function giv(
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nζ, Nζ), NaN * zeros(Nβ, Nβ)
     end
     coef = [ζ̂; β]
-    coef_names = [elasticity_names; covariates_names]
-    vcov = [Σζ fill(NaN, Nζ, Nβ); fill(NaN, Nβ, Nζ) Σβ]
     coefdf = create_coef_dataframe(df, formula_schema, coef, id)
     if (save == :all || save == :fe) && length(feids) > 0
         fedf = select(df, fekeys)
         fedf = retrieve_fixedeffects!(fedf, Y_original * [one(eltype(ζ̂)); ζ̂] - X_original * β, feM, feids)
         unique!(fedf, fekeys)
-        coefdf = innerjoin(coefdf, fedf; on=intersect(names(coefdf), names(fedf)))
+    else
+        fedf = nothing
     end
-
 
     ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
@@ -194,32 +201,49 @@ function giv(
     if save == :residuals || save == :all
         resdf = select(df, id, t)
         resdf[!, Symbol(response_name, "_residual")] = û
-        resdf = innerjoin(resdf, coefdf; on=intersect(names(resdf), names(coefdf)))
-        sort!(resdf, [t, id])
     else
         resdf = nothing
     end
+
+    if save_df
+        savedf = df
+        if !isnothing(resdf)
+            savedf[!, Symbol(response_name, "_residual")] = û
+        end
+        savedf = leftjoin(savedf, coefdf, on=intersect(names(savedf), names(coefdf)))
+        if !isnothing(fedf)
+            savedf = leftjoin(savedf, fedf, on=intersect(names(savedf), names(fedf)))
+        end
+        sort!(savedf, [id, t])
+    else
+        savedf = nothing
+    end
+
     return GIVModel(
-        coef,
-        vcov,
-        Nζ,
-        Nβ,
+        ζ̂,
+        β,
+        Σζ,
+        Σβ,
         σu²vec,
         ζS,
         complete_coverage,
 
         formula,
+        formula_schema,
         response_name,
         endog_name,
-        coef_names,
+        endog_coefnames,
+        exog_coefnames,
 
         id,
         t,
         weight,
-        exclude_pairs,
+        Dict(exclude_pairs),
 
         coefdf,
+        fedf,
         resdf,
+        savedf,
 
         converged,
         N,
@@ -245,10 +269,10 @@ function get_coefnames(formula_givcore, formula_schema)
     endog_name = string(endogsymbol(endog_term))
 
     response_name = coefnames(formula_schema.lhs)[1]
-    elasticity_names = coefnames(formula_schema.lhs)[2:end]
-    covariates_names = coefnames(formula_schema.rhs)
+    endog_coefnames = coefnames(formula_schema.lhs)[2:end]
+    exog_coefnames = coefnames(formula_schema.rhs)
 
-    return response_name, endog_name, elasticity_names, covariates_names, slope_terms
+    return response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms
 end
 
 
@@ -279,26 +303,54 @@ function preprocess_dataframe(df, formula, id, t, weight)
     return df
 end
 
-parse_guess(elasticity_names, guess::Vector{<:Number}, ::Val) = guess
-parse_guess(elasticity_names, ::Nothing, ::Val) = nothing
-parse_guess(elasticity_names, guess::Number, ::Val) = [guess]
+parse_guess(endog_coefnames, guess::Vector{<:Number}, ::Val) = guess
+parse_guess(endog_coefnames, ::Nothing, ::Val) = nothing
+parse_guess(endog_coefnames, guess::Number, ::Val) = [guess]
 
-function parse_guess(elasticity_names, guess::Dict, ::Val{:scalar_search})
+function parse_guess(endog_coefnames, guess::Dict, ::Val{:scalar_search})
     if "Aggregate" ∉ keys(guess)
         throw(ArgumentError("To use the scalar-search algorithm, specify the initial guess using \"Aggregate\" as the key in `guess`"))
     end
-    return parse_guess(elasticity_names, guess["Aggregate"], Val(:scalar_search))
+    return parse_guess(endog_coefnames, guess["Aggregate"], Val(:scalar_search))
 end
 
-function parse_guess(elasticity_names, guess::Dict, ::Any)
+function parse_guess(endog_coefnames, guess::Dict, ::Any)
     guess = Dict(string(k) => v for (k, v) in pairs(guess))
-    return map(elasticity_names) do elasticity_name
-        if elasticity_name ∉ keys(guess)
-            throw(ArgumentError("Initial guess for \"$(elasticity_name)\" is missing"))
+    return map(endog_coefnames) do endog_coefname
+        if endog_coefname ∉ keys(guess)
+            throw(ArgumentError("Initial guess for \"$(endog_coefname)\" is missing"))
         else
-            return guess[elasticity_name]
+            return guess[endog_coefname]
         end
     end
+end
+
+"""
+    extract_raw_matrices(df, formula, id, t, weight)
+    
+    Convenient function to extract the raw matrices used for estimation. 
+"""
+function extract_raw_matrices(df, formula, id, t, weight; contrasts=Dict{Symbol,Any}(), exclude_pairs=Dict{Int,Vector{Int}}())
+    formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
+    df = preprocess_dataframe(df, formula, id, t, weight)
+    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    # regress the left-hand side q, and Cp on the right-hand side
+
+    response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
+
+    X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
+    Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)
+    q, Cp = Y_original[:, 1], Y_original[:, 2:end]
+    # Y_feres, X_feres, β_ols, residuals, feM = ols_with_fixed_effects(Y_original, X_original, fes; tol=tol)
+
+    # uq, uCp = residuals[:, 1], residuals[:, 2:end]
+
+    S = df[!, weight]
+    obs_index = create_observation_index(df, id, t, exclude_pairs)
+
+    formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
+    C = modelcols(collect_matrix_terms(formula_slope), df)
+    return q, Cp, C, S, X_original, obs_index
 end
 
 function create_coef_dataframe(df, formula_schema, coef, id)
@@ -418,7 +470,7 @@ function build_error_function(df,
     formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
-    response_name, endog_name, elasticity_names, covariates_names, slope_terms = get_coefnames(formula_givcore, formula_schema)
+    response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
 
     X_original = convert(Matrix{Float64}, modelcols(formula_schema.rhs, df))
     Y_original = modelcols(collect_matrix_terms(formula_schema.lhs), df)

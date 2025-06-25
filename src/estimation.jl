@@ -368,16 +368,6 @@ end
 
 mean_moment_conditions(ζ, args...) = vec(mean(moment_conditions(ζ, args...); dims=2))
 
-function estimate_loading_on_η(x, η, cholη=cholesky(η' * η))
-    λ = cholη \ (η' * x)
-    return λ
-end
-
-function residualize_on_η(x, η, cholη=cholesky(η' * η))
-    λ = estimate_loading_on_η(x, η, cholη)
-    return x - η * λ, λ
-end
-
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Nmom = length(ζ)
     ζSvec = zeros(eltype(ζ), obs_index.T)
@@ -530,15 +520,15 @@ This version uses the observation indexing structure instead of matrices directl
 
 Parameters:
 - σu²vec: Pre-computed entity-specific residual variances
-- η: Matrix of control variables
+- X: Matrix of exogenous variables
 - obs_index: Observation index structure with entity mappings
 
 Returns:
 - Covariance matrix for OLS estimator
 """
-function solve_ols_vcov(σu²vec, η, obs_index)
+function solve_ols_vcov(σu²vec, X, obs_index)
     N, T = obs_index.N, obs_index.T
-    Nmom = size(η, 2)
+    Nmom = size(X, 2)
 
     # Preallocate the final matrices
     bread = zeros(Nmom, Nmom)
@@ -550,8 +540,8 @@ function solve_ols_vcov(σu²vec, η, obs_index)
         local_meat = zeros(Nmom, Nmom)
 
         for i in chunk_range
-            # Collect η values for this entity
-            η_i = zeros(0, Nmom)
+            # Collect X values for this entity
+            X_i = zeros(0, Nmom)
             n_obs = 0  # Count observations for normalization
 
             # Find all observations for entity i
@@ -565,7 +555,7 @@ function solve_ols_vcov(σu²vec, η, obs_index)
                 end
 
                 # Add to collected values
-                η_i = vcat(η_i, transpose(η[idx, :]))
+                X_i = vcat(X_i, transpose(X[idx, :]))
                 n_obs += 1
             end
 
@@ -575,29 +565,29 @@ function solve_ols_vcov(σu²vec, η, obs_index)
             end
 
             # Identify non-zero columns to exploit sparsity
-            zero_cols = vec(all(iszero, η_i; dims=1))
+            zero_cols = vec(all(iszero, X_i; dims=1))
             nonzero_cols = findall(!x -> x, zero_cols)
             if isempty(nonzero_cols)
                 continue  # Skip if all columns are zero
             end
 
             # Extract non-zero columns
-            η_i_nonzero = η_i[:, nonzero_cols]
+            X_i_nonzero = X_i[:, nonzero_cols]
 
-            # Compute ηη'_i matrix
-            ηη_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
-            BLAS.syrk!('U', 'T', 1.0 / n_obs, η_i_nonzero, 0.0, ηη_i_sub)
+            # Compute XX'_i matrix
+            XX_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
+            BLAS.syrk!('U', 'T', 1.0 / n_obs, X_i_nonzero, 0.0, XX_i_sub)
 
             # Wrap with Symmetric to represent the full symmetric matrix
-            ηη_i_sub_sym = Symmetric(ηη_i_sub, :U)
+            XX_i_sub_sym = Symmetric(XX_i_sub, :U)
 
             # Map back to original dimensions
-            full_ηη_i = zeros(Nmom, Nmom)
-            full_ηη_i[nonzero_cols, nonzero_cols] .= ηη_i_sub_sym
+            full_XX_i = zeros(Nmom, Nmom)
+            full_XX_i[nonzero_cols, nonzero_cols] .= XX_i_sub_sym
 
             # Update local accumulators
-            local_bread .+= full_ηη_i
-            local_meat .+= full_ηη_i .* σu²vec[i]
+            local_bread .+= full_XX_i
+            local_meat .+= full_XX_i .* σu²vec[i]
         end
 
         return local_bread, local_meat
