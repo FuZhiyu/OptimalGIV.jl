@@ -2,8 +2,14 @@
     giv(df, formula, id, t, weight; <keyword arguments>)
 
 
-Estimate the GIV model. It returns a `GIVModel` object containing the estimated coefficients, standard errors, and other information.
+Estimate the GIV model given by:
 
+```math
+    q_it +  endog(p_t) × C_it' ζ = X_it' β + u_it
+```
+such that p_t is pinned down by market clearing condition Σ_i (q_it S_it) = 0, and E[u_it u_jt] = 0. 
+
+It returns a `GIVModel` object containing the estimated coefficients, standard errors, and other information.
 
 # Arguments
 

@@ -10,12 +10,31 @@ Estimate models using granular instrument variables (GIV), the optimal flavor.
 
 **Working in progress**: The core algorithms are thoroughly tested using simulations, but documentations are incomplete and bugs may exists for minor features. Feature requests and bug reports are welcomed. 
 
+### Model Specification
+
+The GIV model estimated by this package follows the specification:
+
+$$\begin{aligned}
+\left.\begin{array}{c}
+\begin{array}{cl}
+q_{i,t} & =-p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{\zeta}+\mathbf{X}_{i,t}'\boldsymbol{\beta}+u_{i,t},\\
+0 & =\sum_{i}S_{i,t}q_{i,t}
+\end{array}\end{array}\right\} \implies & p_{t}=\frac{1}{\mathbf{C}_{S,t}'\boldsymbol{\zeta}}\left[\mathbf{X}_{S,t}'\boldsymbol{\beta}+u_{S,t}\right],
+\end{aligned}
+$$
+
+where $q_{i,t}$ and $p_{t}$ are endogenous, $S$ is the weighting variable $X_S$ indicates $S$ weighted summation. 
+
+The model is estimated with the following moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$. See references below for details.
+
+
 ## Installation
 
 ```julia
 using Pkg
 Pkg.add("OptimalGIV")
 ```
+
 
 ## Usage
 
@@ -204,7 +223,7 @@ guess = Dict("Aggregate" => 2.5)
 
 To see the order of coefficients or get the coefficient labels, one can use the helper function:
 ```julia
-response, endog_name, elasticity_names, covariate_names, slope_terms = 
+response, endog_name, endog_coefnames, covariate_names, slope_terms = 
     get_coefnames(df, formula)
 ```
 
