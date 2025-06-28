@@ -17,6 +17,7 @@ using Tables
 using PrecompileTools
 using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!, has_fe
 using FixedEffects: solve_residuals!, solve_coefficients!
+using HeteroPCA
 @reexport using StatsAPI
 
 include("givmodels.jl")
@@ -31,7 +32,7 @@ include("simulation.jl")
 # include("gmm.jl")
 
 export GIVModel
-export @formula, endog
+export @formula, endog, pc
 export giv,
     estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, build_error_function, simulate_data, extract_raw_matrices
 export coef,

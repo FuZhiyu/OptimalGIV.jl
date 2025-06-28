@@ -12,12 +12,28 @@ StatsModels.termvars(t::EndogenousTerm) = [Symbol(t.x)]
 endog(x::Symbol) = EndogenousTerm(term(x))
 endog(x::Term) = EndogenousTerm(x)
 
+struct PCTerm{K} <: AbstractTerm end
+pc(k::Int) = PCTerm{k}()
+StatsModels.terms(::PCTerm{K}) where {K} = []
+StatsModels.termvars(::PCTerm{K}) where {K} = []
+
 has_endog(::EndogenousTerm) = true
 has_endog(::FunctionTerm{typeof(endog)}) = true
 has_endog(@nospecialize(t::InteractionTerm)) = any(has_endog(x) for x in t.terms)
 has_endog(::AbstractTerm) = false
 has_endog(f::Tuple) = any(has_endog(x) for x in f)
 has_endog(@nospecialize(t::FormulaTerm)) = any(has_endog(x) for x in eachterm(t.lhs))
+
+has_pc(::PCTerm{K}) where {K} = true
+has_pc(::FunctionTerm{typeof(pc)}) = true
+has_pc(::AbstractTerm) = false
+has_pc(f::Tuple) = any(has_pc(x) for x in f)
+has_pc(@nospecialize(t::FormulaTerm)) = any(has_pc(x) for x in eachterm(t.rhs))
+
+get_pc_k(::PCTerm{K}) where {K} = K
+get_pc_k(t::FunctionTerm{typeof(pc)}) = t.args[1].n  # Extract the value from ConstantTerm
+get_pc_k(f::Tuple) = maximum(get_pc_k(x) for x in f if has_pc(x); init=0)
+get_pc_k(@nospecialize(t::FormulaTerm)) = get_pc_k(t.rhs)
 
 endogsymbol(t::EndogenousTerm) = Symbol(t.x)
 endogsymbol(t::FunctionTerm{typeof(endog)}) = Symbol(t.args[1])
@@ -45,6 +61,7 @@ has_categorical(t::CategoricalTerm) = true
 has_categorical(t::InteractionTerm) = any(has_categorical(x) for x in t.terms)
 
 replace_function_term(@nospecialize(t::FunctionTerm{typeof(endog)})) = EndogenousTerm(t.args[1])
+replace_function_term(@nospecialize(t::FunctionTerm{typeof(pc)})) = PCTerm{t.args[1].n}()
 replace_function_term(t::AbstractTerm) = t
 replace_function_term(@nospecialize(t::InteractionTerm)) =
     InteractionTerm(replace_function_term.(t.terms))
@@ -55,12 +72,18 @@ replace_function_term(@nospecialize(t::FormulaTerm)) =
 
 function separate_giv_ols_fe_formulas(df, formula; contrasts=Dict{Symbol,Any}())
     formula_givcore, formula = parse_giv_formula(formula)
+    
+    # Extract PC information
+    n_pcs = has_pc(formula) ? get_pc_k(formula) : 0
+    
+    # Remove PC terms from the formula for standard processing
+    formula_no_pc = remove_pc_terms(formula)
 
     # parse fixed effects
-    if !omitsintercept(formula) & !hasintercept(formula)
-        formula = FormulaTerm(formula.lhs, InterceptTerm{true}() + formula.rhs)
+    if !omitsintercept(formula_no_pc) & !hasintercept(formula_no_pc)
+        formula_no_pc = FormulaTerm(formula_no_pc.lhs, InterceptTerm{true}() + formula_no_pc.rhs)
     end
-    formula_nofe, formula_fes = parse_fe(formula)
+    formula_nofe, formula_fes = parse_fe(formula_no_pc)
 
     fes, feids, fekeys = parse_fixedeffect(df, formula_fes)
     has_fe_intercept = any(fe.interaction isa UnitWeights for fe in fes)
@@ -70,7 +93,18 @@ function separate_giv_ols_fe_formulas(df, formula; contrasts=Dict{Symbol,Any}())
     s = schema(formula_nofe, df, contrasts)
     formula_schema = apply_schema(formula_nofe, s, GIVModel, has_fe_intercept)
 
-    return formula_givcore, formula_schema, fes, feids, fekeys
+    return formula_givcore, formula_schema, fes, feids, fekeys, n_pcs
+end
+
+function remove_pc_terms(formula::FormulaTerm)
+    lhs = formula.lhs
+    rhs_terms = filter(!has_pc, eachterm(formula.rhs))
+    if isempty(rhs_terms)
+        rhs = InterceptTerm{true}()  # Include intercept by default (y ~ 1)
+    else
+        rhs = length(rhs_terms) == 1 ? rhs_terms[1] : +(rhs_terms...)
+    end
+    return FormulaTerm(lhs, rhs)
 end
 
 function parse_giv_formula(@nospecialize(f::FormulaTerm))

@@ -115,7 +115,7 @@ function giv(
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
     response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
@@ -219,6 +219,33 @@ function giv(
         savedf = nothing
     end
 
+    # Initialize PC-related fields (will be updated later if n_pcs > 0)
+    pc_factors = nothing
+    pc_loadings = nothing
+    pc_model = nothing
+
+    # TODO: Implement PC extraction here if n_pcs > 0
+    # This will extract factors and loadings from final residuals û
+
+    # If saving dataframe and PC factors were extracted, add them to savedf
+    if save_df && n_pcs > 0
+        # Add PC factors to savedf (factors are by time period)
+        time_pc_df = DataFrame(t => unique(df[!, t]))
+        for k in 1:n_pcs
+            time_pc_df[!, Symbol("pc_factor_", k)] = pc_factors[:, k]
+        end
+        savedf = leftjoin(savedf, time_pc_df, on=t)
+
+        # Add PC loadings to savedf (loadings are by entity)
+        if !isnothing(pc_loadings)
+            entity_loading_df = DataFrame(id => unique(df[!, id]))
+            for k in 1:n_pcs
+                entity_loading_df[!, Symbol("pc_loading_", k)] = pc_loadings[:, k]
+            end
+            savedf = leftjoin(savedf, entity_loading_df, on=id)
+        end
+    end
+
     return GIVModel(
         ζ̂,
         β,
@@ -245,6 +272,12 @@ function giv(
         resdf,
         savedf,
 
+        # PC-related fields
+        n_pcs,
+        pc_factors,
+        pc_loadings,
+        pc_model,
+
         converged,
         N,
         obs_index.T,
@@ -260,7 +293,7 @@ end
 A convenience function to obtain the name of variables from the original formula. 
 """
 function get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     return get_coefnames(formula_givcore, formula_schema)
 end
 
@@ -333,7 +366,7 @@ end
 function extract_raw_matrices(df, formula, id, t, weight; contrasts=Dict{Symbol,Any}(), exclude_pairs=Dict{Int,Vector{Int}}())
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
     response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
@@ -467,7 +500,7 @@ function build_error_function(df,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
     response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)

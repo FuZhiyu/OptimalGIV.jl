@@ -26,6 +26,12 @@ struct GIVModel <: StatisticalModel
     residual_df::Union{DataFrame,Nothing}
     df::Union{DataFrame,Nothing}
 
+    # PC-related fields
+    n_pcs::Int
+    pc_factors::Union{Matrix{Float64}, Nothing}     # T×k factor matrix
+    pc_loadings::Union{Matrix{Float64}, Nothing}    # N×k loadings matrix
+    pc_model::Union{HeteroPCAModel, Nothing}
+
     converged::Bool
     N::Int64
     T::Int64
