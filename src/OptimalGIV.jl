@@ -26,6 +26,7 @@ include("estimation.jl")
 include("scalar_search.jl")
 include("utils/formula.jl")
 include("utils/ols_fe_solver.jl")
+include("utils/pc_extraction.jl")
 # include("utils/delta_method.jl")
 
 include("simulation.jl")

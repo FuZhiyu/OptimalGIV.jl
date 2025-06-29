@@ -24,11 +24,17 @@ function estimate_giv(
     quiet = false,
     complete_coverage=true,
     solver_options=(; ftol=1e-6),
+    n_pcs=0,
     kwargs...,
 )
     tol = solver_options.ftol
     # Check if panel is balanced before proceeding
     N, T = obs_index.N, obs_index.T
+    
+    # PC extraction not supported with scalar search
+    if n_pcs > 0
+        throw(ArgumentError("PC extraction is not supported with the scalar search algorithm. Use :iv, :iv_twopass, or :debiased_ols instead."))
+    end
 
     # Verify that we have a balanced panel (N*T observations)
     if length(q) != N * T

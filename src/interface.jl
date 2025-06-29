@@ -94,6 +94,8 @@ The output is `m::GIVModel`. Several important fields are:
   - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
 
 """
+
+
 function giv(
     df,
     formula::FormulaTerm,
@@ -159,6 +161,7 @@ function giv(
         quiet=quiet,
         complete_coverage=complete_coverage,
         solver_options=solver_options,
+        n_pcs=n_pcs,
     )
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
@@ -195,6 +198,24 @@ function giv(
     ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
 
+    # Extract PCs from final residuals if requested and update residuals
+    pc_factors = nothing
+    pc_loadings = nothing
+    pc_model = nothing
+
+    if n_pcs > 0
+        try
+            pc_factors, pc_loadings, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs)
+        catch e
+            if !quiet
+                @warn "PC extraction failed: $e. Continuing without PC extraction."
+            end
+            pc_factors = nothing
+            pc_loadings = nothing
+            pc_model = nothing
+        end
+    end
+
     dof = length(ζ̂) + length(β)
     dof_residual = nrow(df) - dof
 
@@ -219,20 +240,13 @@ function giv(
         savedf = nothing
     end
 
-    # Initialize PC-related fields (will be updated later if n_pcs > 0)
-    pc_factors = nothing
-    pc_loadings = nothing
-    pc_model = nothing
-
-    # TODO: Implement PC extraction here if n_pcs > 0
-    # This will extract factors and loadings from final residuals û
 
     # If saving dataframe and PC factors were extracted, add them to savedf
-    if save_df && n_pcs > 0
-        # Add PC factors to savedf (factors are by time period)
+    if save_df && n_pcs > 0 && !isnothing(pc_factors)
+        # Add PC factors to savedf (factors are k×T, so we need pc_factors[k, :])
         time_pc_df = DataFrame(t => unique(df[!, t]))
         for k in 1:n_pcs
-            time_pc_df[!, Symbol("pc_factor_", k)] = pc_factors[:, k]
+            time_pc_df[!, Symbol("pc_factor_", k)] = pc_factors[k, :]
         end
         savedf = leftjoin(savedf, time_pc_df, on=t)
 

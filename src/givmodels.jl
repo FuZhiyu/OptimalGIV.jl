@@ -28,7 +28,7 @@ struct GIVModel <: StatisticalModel
 
     # PC-related fields
     n_pcs::Int
-    pc_factors::Union{Matrix{Float64}, Nothing}     # T×k factor matrix
+    pc_factors::Union{Matrix{Float64}, Nothing}     # k×T factor matrix
     pc_loadings::Union{Matrix{Float64}, Nothing}    # N×k loadings matrix
     pc_model::Union{HeteroPCAModel, Nothing}
 

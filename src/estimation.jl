@@ -9,6 +9,7 @@ function estimate_giv(
     quiet=false,
     complete_coverage=true,
     solver_options=(;),
+    n_pcs=0,
 ) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -18,13 +19,13 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A())
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs)
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A()),
+        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs),
         guess;
         solver_options...,
     )
@@ -39,13 +40,18 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
 
     # Calculate residuals
     u = q + Cp * ζ
+    
+    # Extract PCs and update residuals if requested
+    if n_pcs > 0
+        _, _, _, u = extract_pcs_from_residuals(u, obs_index, n_pcs)
+    end
 
     # Calculate variance by entity
     σu²vec = calculate_entity_variance(u, obs_index)
@@ -136,7 +142,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0)
     Nm = length(ζ)
     T = obs_index.T
     # Compute period weights if complete_coverage constraint holds
@@ -150,6 +156,12 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
     # residuals and entity-level precision ------------------------------
     u = q .+ Cp * ζ
+    
+    # Extract PCs and update residuals if requested
+    if n_pcs > 0
+        _, _, _, u = extract_pcs_from_residuals(u, obs_index, n_pcs)
+    end
+    
     σu²vec = calculate_entity_variance(u, obs_index)
     prec = inv.(σu²vec)
 
@@ -312,12 +324,17 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
     # Calculate residuals
     u = q + Cp * ζ
+    
+    # Extract PCs and update residuals if requested
+    if n_pcs > 0
+        _, _, _, u = extract_pcs_from_residuals(u, obs_index, n_pcs)
+    end
 
     # Calculate variance by entity
     σu²vec = calculate_entity_variance(u, obs_index)
@@ -366,7 +383,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     return err
 end
 
-mean_moment_conditions(ζ, args...) = vec(mean(moment_conditions(ζ, args...); dims=2))
+
+mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0) = 
+    vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs); dims=2))
 
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Nmom = length(ζ)
