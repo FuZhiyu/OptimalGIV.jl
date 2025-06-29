@@ -565,7 +565,7 @@ function build_error_function(df,
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
-        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}())
-        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index)
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs)
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs)
     end
 end

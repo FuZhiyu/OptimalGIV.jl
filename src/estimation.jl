@@ -46,15 +46,17 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
 
     # Calculate residuals
-    u = q + Cp * ζ
+    u_orig = q + Cp * ζ
     
     # Extract PCs and update residuals if requested
+    u_for_variance = u_orig
+    loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
     if n_pcs > 0
-        _, _, _, u = extract_pcs_from_residuals(u, obs_index, n_pcs)
+        _, loadings_matrix, _, u_for_variance = extract_pcs_from_residuals(u_orig, obs_index, n_pcs)
     end
 
-    # Calculate variance by entity
-    σu²vec = calculate_entity_variance(u, obs_index)
+    # Calculate variance by entity using updated residuals
+    σu²vec = calculate_entity_variance(u_for_variance, obs_index)
     precision = 1 ./ σu²vec
     # precision = precision ./ sum(precision)
 
@@ -89,7 +91,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                         continue
                     end
 
-                    err[imom, t] += u[idx_i] * u[idx_j] * weight_i * S[idx_j]
+                    empirical_cov = u_orig[idx_i] * u_orig[idx_j]
+                    expected_cov = n_pcs > 0 ? dot(loadings_matrix[i, :], loadings_matrix[j, :]) : zero(eltype(ζ))
+                    err[imom, t] += (empirical_cov - expected_cov) * weight_i * S[idx_j]
                     weightsum[imom, t] += weight_i * S[idx_j]
                 end
 
@@ -114,7 +118,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                         continue
                     end
 
-                    err[imom, t] += u[idx_i] * u[idx_j] * weight_j * S[idx_i]
+                    empirical_cov = u_orig[idx_i] * u_orig[idx_j]
+                    expected_cov = n_pcs > 0 ? dot(loadings_matrix[i, :], loadings_matrix[j, :]) : zero(eltype(ζ))
+                    err[imom, t] += (empirical_cov - expected_cov) * weight_j * S[idx_i]
                     weightsum[imom, t] += weight_j * S[idx_i]
                 end
 
@@ -143,6 +149,10 @@ end
 
 
 function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0)
+    if n_pcs > 0
+        throw(ArgumentError("PC extraction (n_pcs > 0) is not yet supported for the :iv algorithm. Use :iv_twopass instead."))
+    end
+
     Nm = length(ζ)
     T = obs_index.T
     # Compute period weights if complete_coverage constraint holds
@@ -156,12 +166,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
     # residuals and entity-level precision ------------------------------
     u = q .+ Cp * ζ
-    
-    # Extract PCs and update residuals if requested
-    if n_pcs > 0
-        _, _, _, u = extract_pcs_from_residuals(u, obs_index, n_pcs)
-    end
-    
+
     σu²vec = calculate_entity_variance(u, obs_index)
     prec = inv.(σu²vec)
 
@@ -325,16 +330,15 @@ end
 
 
 function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0)
+    if n_pcs > 0
+        throw(ArgumentError("PC extraction (n_pcs > 0) is not yet supported for the :debiased_ols algorithm. Use :iv_twopass instead."))
+    end
+
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
     # Calculate residuals
     u = q + Cp * ζ
-    
-    # Extract PCs and update residuals if requested
-    if n_pcs > 0
-        _, _, _, u = extract_pcs_from_residuals(u, obs_index, n_pcs)
-    end
 
     # Calculate variance by entity
     σu²vec = calculate_entity_variance(u, obs_index)

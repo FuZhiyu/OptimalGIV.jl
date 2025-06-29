@@ -91,7 +91,7 @@ function extract_pcs_from_residuals(residuals, obs_index, n_pcs)
     residual_matrix = vector_to_matrix(residuals, obs_index)
     
     # Extract PCs using HeteroPCA
-    pca_model = heteropca(residual_matrix, n_pcs; demean=false, impute_method=:zero)
+    pca_model = heteropca(residual_matrix, n_pcs; impute_method=:zero, maxiter=1000)
     
     # Get factors and reconstructed matrix
     factors_kt = predict(pca_model, residual_matrix)  # k×T matrix
