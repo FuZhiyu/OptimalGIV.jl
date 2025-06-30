@@ -235,7 +235,7 @@ function giv(
         if !isnothing(fedf)
             savedf = leftjoin(savedf, fedf, on=intersect(names(savedf), names(fedf)))
         end
-        sort!(savedf, [id, t])
+        sort!(savedf, [t, id])
     else
         savedf = nothing
     end
@@ -486,7 +486,7 @@ function check_market_clearing(q, S, obs_index)
         end
 
         # Check if sum exceeds tolerance
-        if weighted_sum^2 > eps(eltype(q))
+        if weighted_sum^2 > sqrt(eps(eltype(q)))
             return false  # Constraint violated
         end
     end
