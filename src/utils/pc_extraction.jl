@@ -71,7 +71,7 @@ function matrix_to_vector(residual_matrix, obs_index)
 end
 
 """
-    extract_pcs_from_residuals(residuals, obs_index, n_pcs)
+    extract_pcs_from_residuals(residuals, obs_index, n_pcs; <keyword arguments>)
 
 Extract principal components from residuals and return factors, loadings, model, and updated residuals.
 
@@ -80,18 +80,23 @@ Extract principal components from residuals and return factors, loadings, model,
 - `obs_index`: ObservationIndex containing entity/time mapping  
 - `n_pcs`: Number of principal components to extract
 
+# Keyword Arguments
+- Additional keyword arguments are passed to HeteroPCA.heteropca()
+
 # Returns
 - `factors`: k×T matrix of time factors
 - `loadings`: N×k matrix of entity loadings
 - `pca_model`: HeteroPCAModel object
 - `updated_residuals`: Vector of residuals with PC components removed
 """
-function extract_pcs_from_residuals(residuals, obs_index, n_pcs)
+function extract_pcs_from_residuals(residuals, obs_index, n_pcs; kwargs...)
     # Convert to matrix format
     residual_matrix = vector_to_matrix(residuals, obs_index)
     
-    # Extract PCs using HeteroPCA
-    pca_model = heteropca(residual_matrix, n_pcs; impute_method=:zero, maxiter=1000)
+    # Extract PCs using HeteroPCA with provided options
+    default_options = (impute_method=:zero, demean=false, maxiter=1000)
+    pca_options = merge(default_options, kwargs)
+    pca_model = heteropca(residual_matrix, n_pcs; pca_options...)
     
     # Get factors and reconstructed matrix
     factors_kt = predict(pca_model, residual_matrix)  # k×T matrix

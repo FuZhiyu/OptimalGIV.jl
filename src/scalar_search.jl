@@ -25,6 +25,7 @@ function estimate_giv(
     complete_coverage=true,
     solver_options=(; ftol=1e-6),
     n_pcs=0,
+    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     kwargs...,
 )
     tol = solver_options.ftol

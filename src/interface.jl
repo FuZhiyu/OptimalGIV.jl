@@ -79,6 +79,8 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 - `iterations::Int = 100`: Maximum number of iterations for the solver.
 - `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
     Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
+- `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
+    Default is `(; impute_method=:zero, demean=false, maxiter=1000)`.
 
 # Output
 
@@ -114,6 +116,7 @@ function giv(
     tol=1e-6,
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
+    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -162,6 +165,7 @@ function giv(
         complete_coverage=complete_coverage,
         solver_options=solver_options,
         n_pcs=n_pcs,
+        pca_option=pca_option,
     )
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
@@ -205,7 +209,7 @@ function giv(
 
     if n_pcs > 0
         try
-            pc_factors, pc_loadings, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs)
+            pc_factors, pc_loadings, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
         catch e
             if !quiet
                 @warn "PC extraction failed: $e. Continuing without PC extraction."
@@ -510,6 +514,7 @@ function build_error_function(df,
     complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
+    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     kwargs...
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
@@ -565,7 +570,7 @@ function build_error_function(df,
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
-        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs)
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option)
         return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs)
     end
 end
