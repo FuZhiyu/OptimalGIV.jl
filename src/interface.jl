@@ -208,16 +208,7 @@ function giv(
     pc_model = nothing
 
     if n_pcs > 0
-        try
-            pc_factors, pc_loadings, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
-        catch e
-            if !quiet
-                @warn "PC extraction failed: $e. Continuing without PC extraction."
-            end
-            pc_factors = nothing
-            pc_loadings = nothing
-            pc_model = nothing
-        end
+        pc_factors, pc_loadings, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
     end
 
     dof = length(ζ̂) + length(β)
