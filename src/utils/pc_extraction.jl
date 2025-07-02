@@ -18,11 +18,11 @@ Convert stacked residuals vector to N×T matrix using observation index.
 # Returns
 - `residual_matrix`: N×T matrix where residual_matrix[i,t] is the residual for entity i at time t
 """
-function vector_to_matrix(residuals, obs_index)
+function vector_to_matrix(residuals::Vector{F}, obs_index) where F
     N, T = obs_index.N, obs_index.T
     
     # Initialize matrix with zeros (handles missing observations)
-    residual_matrix = zeros(eltype(residuals), N, T)
+    residual_matrix = Matrix{Union{F,Missing}}(missing, N, T)
     
     # Efficiently fill matrix using entity_obs_indices
     for i in 1:N
@@ -31,7 +31,7 @@ function vector_to_matrix(residuals, obs_index)
             if obs_idx > 0  # Entity i is present in time period t
                 residual_matrix[i, t] = residuals[obs_idx]
             end
-            # If obs_idx == 0, entity i is not present in time t, so residual_matrix[i,t] remains 0
+            # If obs_idx == 0, entity i is not present in time t, so residual_matrix[i,t] remains missing
         end
     end
     
