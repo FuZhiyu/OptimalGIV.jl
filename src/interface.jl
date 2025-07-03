@@ -208,7 +208,8 @@ function giv(
     pc_model = nothing
 
     if n_pcs > 0
-        pc_factors, pc_loadings, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
+        pc_factors, _, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
+        pc_loadings = projection(pc_model) # important: save the projection so that projection x factors = predicted values
     end
 
     dof = length(ζ̂) + length(β)

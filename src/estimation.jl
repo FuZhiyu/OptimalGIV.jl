@@ -57,7 +57,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     end
 
     # Calculate variance by entity using updated residuals
-    σu²vec = calculate_entity_variance(u_for_variance, obs_index)
+    σu²vec = calculate_entity_variance(u_orig, obs_index)
     precision = 1 ./ σu²vec
     # precision = precision ./ sum(precision)
 
