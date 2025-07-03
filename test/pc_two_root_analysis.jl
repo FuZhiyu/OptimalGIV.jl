@@ -17,18 +17,47 @@ simparams = (
 )
 ##
 df_list = simulate_data(simparams, seed=rand(1:1000), Nsims=100)
-giv(df_list[1], @formula(q + endog(p) ~ 0 + pc(2)), :id, :t, :S; algorithm=:iv_twopass, pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=StandardHeteroPCA(), suppress_warnings=true, abstol=1e-8), guess=[1.0])
+# giv(df_list[1], @formula(q + endog(p) ~ 0 + pc(2)), :id, :t, :S; algorithm=:iv_twopass, pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=StandardHeteroPCA(), suppress_warnings=true, abstol=1e-8), guess=[1.0])
+giv(df_list[1], @formula(q + endog(p) ~ 0 + pc(2)), :id, :t, :S; algorithm=:iv, pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=StandardHeteroPCA(), suppress_warnings=true, abstol=1e-8), guess=[1.0])
 
-
+df = df_list[1]
 ##
 
 err, elem = build_error_function(df, @formula(q + endog(p) ~ 0 + pc(2)), :id, :t, :S; algorithm=:iv_twopass, pca_option=(; impute_method=:zero, demean=true, maxiter=10000, algorithm=DeflatedHeteroPCA(t_block=1000), abstol=1e-8))
-
+plot(x -> err([x])[1], 1.5:0.3:5.0)
 
 ##
+using StatsBase
+using DataFramesMeta, FixedEffectModels
+function estimate_standard_giv(df, k; pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=StandardHeteroPCA(), suppress_warnings=true, abstol=1e-8))
+    df = @chain df begin
+        groupby(:id)
+        @combine(:precision = 1 ./ var(skipmissing(:q)))
+        @transform!(:precision = :precision ./ sum(:precision))
+        innerjoin(df, on=:id)
+    end
+    m = reg(df, @formula(q ~ fe(t)), weights=:precision, save=:residuals)
+    obsindex = OptimalGIV.create_observation_index(df, :id, :t)
+    _, _, _, u = OptimalGIV.extract_pcs_from_residuals(m.residuals, obsindex, k; pca_option...)
+    df.u = u
+    giv = @chain df begin
+        groupby(:id)
+        @transform!(:precision = 1 ./ var(skipmissing(:u)))
+        @transform!(:precision = :precision ./ sum(:precision))
+        groupby(:t)
+        @combine(:z = sum(skipmissing(:S .* :u)), :qE = mean(:q, weights(:precision)), :p = first(:p))
+    end
+    reg(giv, @formula(qE ~ (p ~ z)))
+end
+-estimate_standard_giv(df, 2).coef[2]
 
-err, elem = build_error_function(df, @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)), :id, :t, :S; algorithm=:iv_twopass, pca_option=(; impute_method=:zero, demean=false, maxiter=10000, algorithm=DeflatedHeteroPCA(t_block=50), abstol=1e-8))
-plot!(x -> err([x])[1], 1.5:0.3:5.0)
+
+
+
+
+
+# err, elem = build_error_function(df, @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)), :id, :t, :S; algorithm=:iv_twopass, pca_option=(; impute_method=:zero, demean=false, maxiter=10000, algorithm=DeflatedHeteroPCA(t_block=50), abstol=1e-8))
+plot(x -> err([x])[1], 1.5:0.3:5.0)
 
 
 df.u_wrong = df.q + df.p * 2.0
@@ -79,7 +108,7 @@ for (i, df) in enumerate(df_list)
         @formula(q + endog(p) ~ 0 + pc(2)),
         pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10), suppress_warnings=true, abstol=1e-6),
         :id, :t, :S;
-        algorithm=:iv
+        algorithm=:iv_twopass
     )
 
     # Find roots using find_zeros

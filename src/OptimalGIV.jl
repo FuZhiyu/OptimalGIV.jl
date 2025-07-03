@@ -17,8 +17,8 @@ using Tables
 using PrecompileTools
 using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!, has_fe
 using FixedEffects: solve_residuals!, solve_coefficients!
-using HeteroPCA
 @reexport using StatsAPI
+@reexport using HeteroPCA
 
 include("givmodels.jl")
 include("interface.jl")

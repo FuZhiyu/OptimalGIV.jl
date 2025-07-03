@@ -104,7 +104,7 @@ function extract_pcs_from_residuals(residuals, obs_index, n_pcs; kwargs...)
     
     # Format outputs
     factors = factors_kt  # Keep as k×T matrix (native HeteroPCA format)
-    loadings_matrix = loadings(pca_model)  # N×k matrix
+    loadings_matrix = loadings(pca_model)  # N×k matrix (loadings: projection * sqrt(PC vars))
     
     # Remove PC components from residuals
     pc_residuals = residual_matrix - reconstructed
