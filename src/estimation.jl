@@ -47,17 +47,16 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
 
     # Calculate residuals
-    u_orig = q + Cp * ζ
+    u = q + Cp * ζ
     
     # Extract PCs and update residuals if requested
-    u_for_variance = u_orig
     loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
     if n_pcs > 0
-        _, loadings_matrix, _, u_for_variance = extract_pcs_from_residuals(u_orig, obs_index, n_pcs; pca_option...)
+        _, loadings_matrix, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
     end
 
     # Calculate variance by entity using updated residuals
-    σu²vec = calculate_entity_variance(u_orig, obs_index)
+    σu²vec = calculate_entity_variance(u, obs_index)
     precision = 1 ./ σu²vec
     # precision = precision ./ sum(precision)
 
@@ -92,7 +91,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                         continue
                     end
 
-                    empirical_cov = u_orig[idx_i] * u_orig[idx_j]
+                    empirical_cov = u[idx_i] * u[idx_j]
                     expected_cov = n_pcs > 0 ? dot(loadings_matrix[i, :], loadings_matrix[j, :]) : zero(eltype(ζ))
                     err[imom, t] += (empirical_cov - expected_cov) * weight_i * S[idx_j]
                     weightsum[imom, t] += weight_i * S[idx_j]
@@ -119,7 +118,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                         continue
                     end
 
-                    empirical_cov = u_orig[idx_i] * u_orig[idx_j]
+                    empirical_cov = u[idx_i] * u[idx_j]
                     expected_cov = n_pcs > 0 ? dot(loadings_matrix[i, :], loadings_matrix[j, :]) : zero(eltype(ζ))
                     err[imom, t] += (empirical_cov - expected_cov) * weight_j * S[idx_i]
                     weightsum[imom, t] += weight_j * S[idx_i]
@@ -163,24 +162,23 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     err = zeros(eltype(ζ), Nm, T)
 
     # residuals and entity-level precision ------------------------------
-    u_orig = q .+ Cp * ζ
+    u = q .+ Cp * ζ
 
     # Extract PCs and update residuals if requested
-    u_for_variance = u_orig
     loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
     if n_pcs > 0
-        _, loadings_matrix, _, u_for_variance = extract_pcs_from_residuals(u_orig, obs_index, n_pcs; pca_option...)
+        _, loadings_matrix, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
     end
 
-    σu²vec = calculate_entity_variance(u_for_variance, obs_index)
+    σu²vec = calculate_entity_variance(u, obs_index)
     prec = inv.(σu²vec)
 
     weightsum = zeros(eltype(ζ), Nm, T)
     # 1️⃣ fast O(N) pass
-    fast_pass!(weightsum, err, u_orig, C, S, prec, obs_index, loadings_matrix, n_pcs)
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings_matrix, n_pcs)
 
     # 2️⃣ subtract excluded pairs
-    deduct_excluded_pairs!(err, weightsum, C, S, u_orig, prec, obs_index, loadings_matrix, n_pcs)
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings_matrix, n_pcs)
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market

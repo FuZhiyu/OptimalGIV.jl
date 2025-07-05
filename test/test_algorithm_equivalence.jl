@@ -159,6 +159,7 @@ end
         :t,
         :absS;
         guess=ones(5),
+        quiet=true,
         algorithm=:iv_twopass,
     )
 
@@ -169,6 +170,7 @@ end
         :t,
         :absS;
         guess=ones(5),
+        quiet=true,
         algorithm=:iv_twopass,
         complete_coverage=false, # use the nonoptimal vcov algorithm
     )
