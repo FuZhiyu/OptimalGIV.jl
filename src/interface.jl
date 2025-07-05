@@ -116,7 +116,7 @@ function giv(
     tol=1e-6,
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
-    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
+    pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -172,7 +172,7 @@ function giv(
     β = β_q + β_Cp * ζ̂
 
     û = uq + uCp * ζ̂
-    if return_vcov
+    if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off. 
         if complete_coverage
             σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
         else
@@ -208,7 +208,8 @@ function giv(
     pc_model = nothing
 
     if n_pcs > 0
-        pc_factors, _, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
+        pc_factors, _, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
+        # !the saved û is the residuals after the PCs
         pc_loadings = projection(pc_model) # important: save the projection so that projection x factors = predicted values
     end
 
