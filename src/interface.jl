@@ -80,7 +80,7 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 - `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
     Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
 - `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
-    Default is `(; impute_method=:zero, demean=false, maxiter=1000)`.
+    Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
 # Output
 
