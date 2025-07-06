@@ -6,7 +6,7 @@
 [![Build Status](https://app.travis-ci.com/fuzhiyu/OptimalGIV.jl.svg?branch=main)](https://app.travis-ci.com/fuzhiyu/OptimalGIV.jl)
 [![Coverage](https://codecov.io/gh/fuzhiyu/OptimalGIV.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/fuzhiyu/OptimalGIV.jl)
 
-Estimate models using granular instrument variables (GIV), the optimal flavor. 
+Estimate models using granular instrument variables (GIV), with optimal weighting schemes. 
 
 **Working in progress**: The core algorithms are thoroughly tested using simulations, but documentations are incomplete and bugs may exists for minor features. Feature requests and bug reports are welcomed. 
 
@@ -29,6 +29,9 @@ where $q_{i,t}$ and $p_{t}$ are endogenous, $S$ is the weighting variable $X_S$ 
 The model is estimated with the following moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$. See references below for details.
 
 Unbalanced panel is allowed. However, certain algorithms only work with complete coverage ($\sum_{i}S_{i,t}q_{i,t} = 0$ holds in-sample). Cares need to be taken when interpreting the results without complete coverage. 
+
+Internal PC extractions are supported. With internal PCs, the moment conditions become $\mathbb E[u_{i,t}u_{j,t}] = \Lambda \Lambda'$, where $\Lambda$ is the factor loadings estimated internally using [HeteroPCA.jl](https://github.com/FuZhiyu/HeteroPCA.jl) from $u_{i,t}(z) \equiv q_{i,t} + p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{z}$ at each guess of $z$. However, with small samples, the exactly root solving the moment condition may not exist, and users may want to use an minimizer to minimize the error instead. Also, be noted that a model with fully flexible elasticity specification and fully flexible factor loadings is not theoretically identifiable. 
+
 
 ## Installation
 
@@ -77,14 +80,14 @@ The formula interface generally follows the [`StatsModel.jl`](https://github.com
 
 
 ```julia
-@formula(q + interactions & endog(p) ~ exog_controls)
+@formula(q + interactions & endog(p) ~ exog_controls + pc(k))
 ```
 
 - `q`: Response variable (e.g., quantity)
 - `endog(p)`: Endogenous variable (e.g., price). Endogenous variables appear on the left-hand side; hence positive coefficients indicate negative responses of `q` on `p` (downward-sloping demand curve). 
 - `interactions`: Exogenous variables to parameterize heterogeneous elasticities (e.g., entity identifiers or characteristics)
-- `exog_controls`: Exogenous control variables. Fixed effects as in `FixedEffectModels.jl` are allowed. 
-
+- `exog_controls`: Exogenous control variables. Fixed effects as in `FixedEffectModels.jl` are allowed.
+- `pc(k)`: Principal component extraction with `k` factors (optional). When specified, `k` common factors are extracted from residuals using HeteroPCA.jl 
 
 
 #### Examples of formulas:
@@ -100,6 +103,12 @@ The formula interface generally follows the [`StatsModel.jl`](https://github.com
 @formula(q + id & endog(p) + category & endog(p) ~ fe(id) & η1 + η2)
 
 @formula(q + id & endog(p) ~ 0 + id & η)
+
+# With PC extraction (2 factors)
+@formula(q + endog(p) ~ 0 + pc(2))
+
+# exogneous controls with PC extraction
+@formula(q + endog(p) ~ fe(id) & η1 + pc(3))
 ```
 
 ### Key Function: `giv()`
@@ -122,13 +131,14 @@ giv(df, formula, id, t, weight; kwargs...)
   Example: `Dict(1 => [2, 3], 4 => [5])` excludes pairs (1,2), (1,3), and (4,5)
 - `quiet`: Suppress warnings and information messages if true (default: false)
 - `save`: Save additional information - `:none` (default), `:residuals`, `:fe`, or `:all`
-- `save_df`: If true, the full estimation DataFrame (including residuals, coefficients, and fixed-effects columns when requested) is stored in the returned model. Useful for post-estimation analysis.
+- `save_df`: If true, the full estimation DataFrame (including residuals, coefficients, and fixed-effects columns when requested) is stored in the returned model. When PC extraction is used, PC factors and loadings are also included.
 - `complete_coverage`: Whether entities in the dataset cover the full market (auto-detected by checking the market clearing condition within the dataset). `scalar_search` and `debiased_ols` algorithms require full-market coverage. One can overwrite it by providing this keyword argument (not recommended; only for debugging). 
-- `return_vcov`: Calculate variance-covariance matrix (default: true)
+- `return_vcov`: Calculate variance-covariance matrix (default: true, automatically disabled when PC extraction is used)
 - `contrasts`: Contrasts specification for categorical variables (following StatsModels.jl). Untested. Use with cautions.
 - `tol`: Convergence tolerance (default: 1e-6)
 - `iterations`: Maximum iterations (default: 100)
-- `solver_options`: Options for the nonlinear solvers from `NLsolve.jl`. 
+- `solver_options`: Options for the nonlinear solvers from `NLsolve.jl`
+- `pca_option`: Options for HeteroPCA.jl PC extraction (default: `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`) 
 
 ### Working with Results
 
@@ -162,17 +172,22 @@ exog_coefnames(model)    # Names of exogenous-term coefficients
 
 model.coefdf             # DataFrame with entity-specific coefficients (see below)
 model.converged          # Convergence status
+model.n_pcs              # Number of principal components extracted
+model.pc_factors         # PC factors (k×T matrix, or nothing if n_pcs=0)
+model.pc_loadings        # PC loadings (N×k matrix, or nothing if n_pcs=0)
+model.pc_model           # HeteroPCA model object (or nothing if n_pcs=0)
 ```
 
 #### Ordering of Results
 
-All categorical variables in the model follow their **natural sort order**:
+All categorical variables (including `id` variable) in the model follow their **natural sort order**:
 - For numeric categories: sorted numerically (e.g., 3, 5, 10, 20)
 - For string categories: sorted alphabetically (e.g., "firm_A", "firm_B", "firm_C")
 
 This applies to:
 - Coefficient vectors when categorical variables are used in interactions
 - The residual variance vector (`model.residual_variance`), which follows the entity ID order
+- The factor loading matrix
 - The `model.coefdf` DataFrame, which organizes results by categorical variables
 
 Additionally:
@@ -211,7 +226,8 @@ The most flexible algorithm using the moment condition E[u_i u_{S,-i}] = 0. This
 
 - Exclude certain pairs $E[u_i u_j] = 0$ from the moment conditions; 
 - Flexible elasticity specifications; 
-- Unbalanced panel with incomplete market coverage; 
+- Unbalanced panel with incomplete market coverage;
+- PC extraction: Supports internal factor extraction using `pc(k)` in formulas
 
 ### 2. `:iv_twopass` 
 Numerically identical to `:iv` but uses a more straightforward O(N²) implementation with two passes over entity pairs. This is useful for:
@@ -219,15 +235,18 @@ Numerically identical to `:iv` but uses a more straightforward O(N²) implementa
 - When the O(N) optimization in `:iv` might cause numerical issues
 - When there are many pairs to be excluded, which will slow down the algorithm in :iv. 
 - Understanding the computational flow of the moment conditions
+- PC extraction: Supports internal factor extraction using `pc(k)` in formulas
 
 ### 3. `:debiased_ols` 
 Uses the moment condition E[u_i C_it p_it] = 1/ζ_St σ_i². Requires the adding-up constraint to be satisfied (entities must cover the full market). More efficient when applicable but more restrictive.
+- PC extraction: Not supported with this algorithm
 
 ### 4. `:scalar_search`
 Efficient algorithm when the aggregate elasticity is constant across time. Searches for a scalar aggregate elasticity value. Useful for diagnostics or forming initial guesses. Requires:
 - Balanced panel data
 - Constant weights across time
 - Complete market coverage
+- PC extraction: Not supported with this algorithm
 
 ## Initial Guesses
 
@@ -347,8 +366,9 @@ The generated data follows:
 
 ## Limitations
 
-- Internal factor extraction is not supported. Use external methods (e.g., PCA) first. One recommended algorithm is [HeteroPCA.jl](https://github.com/FuZhiyu/HeteroPCA.jl), which can handle heteroskedasticity and unbalanced panel.
-- Time fixed effects are not supported directly;
+- **PC extraction limitations**: Only `:iv` and `:iv_twopass` algorithms support internal PC extraction. The `:debiased_ols` and `:scalar_search` algorithms do not support PC extraction.
+- **Variance-covariance matrix**: When PC extraction is used (`pc(k)` in formula), the variance-covariance matrix calculation is automatically disabled as it is not correct. One should consider bootstrapping instead.
+- Time fixed effects are not supported directly, but one can use a single factor `pc(1)` instead; 
 - Some algorithms require balanced panels
 - The `:debiased_ols` and `:scalar_search` algorithms require complete market coverage
 
