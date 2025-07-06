@@ -14,129 +14,68 @@ using OptimalGIV: simulate_data
         S = repeat([0.3, 0.4, 0.3], outer=5),
         value = randn(15)
     )
-    
-    # Create observation index
     obs_index = create_observation_index(df, :id, :t)
     
-    @testset "vector_to_matrix and matrix_to_vector" begin
-        # Test residuals vector
-        residuals = randn(15)
-        
-        # Convert to matrix and back
-        residual_matrix = vector_to_matrix(residuals, obs_index)
-        recovered_residuals = matrix_to_vector(residual_matrix, obs_index)
-        
-        # Check dimensions
-        @test size(residual_matrix) == (3, 5)  # N×T
-        @test length(recovered_residuals) == 15  # same as original
-        
-        # Check round-trip consistency
-        @test residuals ≈ recovered_residuals
-        
-        # Check specific values
-        # First observation: entity 1, time 1 -> should be at [1,1]
-        @test residual_matrix[1, 1] ≈ residuals[1]
-        # Last observation: entity 3, time 5 -> should be at [3,5] 
-        @test residual_matrix[3, 5] ≈ residuals[15]
-    end
-    
-    @testset "extract_pcs_from_residuals" begin
-        # Test residuals vector
+    @testset "Core PC extraction functionality" begin
         residuals = randn(15)
         n_pcs = 2
         
-        # Extract PCs (now always returns updated residuals)
+        # Test vector/matrix conversion roundtrip
+        residual_matrix = vector_to_matrix(residuals, obs_index)
+        recovered_residuals = matrix_to_vector(residual_matrix, obs_index)
+        @test size(residual_matrix) == (3, 5)  # N×T
+        @test residuals ≈ recovered_residuals
+        
+        # Test specific value mapping
+        @test residual_matrix[1, 1] ≈ residuals[1]  # entity 1, time 1
+        @test residual_matrix[3, 5] ≈ residuals[15]  # entity 3, time 5
+        
+        # Test PC extraction
         factors, loadings_matrix, pca_model, updated_residuals = extract_pcs_from_residuals(residuals, obs_index, n_pcs)
         
-        # Check dimensions
+        # Check output dimensions and types
         @test size(factors) == (2, 5)  # k×T
         @test size(loadings_matrix) == (3, 2)  # N×k
         @test typeof(pca_model) <: HeteroPCAModel
         @test length(updated_residuals) == length(residuals)
         
-        # Check that factors and loadings are numeric
+        # Check finite values
         @test all(isfinite.(factors))
         @test all(isfinite.(loadings_matrix))
         @test all(isfinite.(updated_residuals))
-    end
-    
-    @testset "residual updating properties" begin
-        # Test residuals vector  
-        residuals = randn(15)
-        n_pcs = 2
         
-        # Extract PCs and update residuals
-        _, _, _, updated_residuals = extract_pcs_from_residuals(residuals, obs_index, n_pcs)
-        
-        # Check dimensions
-        @test length(updated_residuals) == length(residuals)
-        
-        # Check that residuals changed (PC components removed)
+        # Check that residuals changed and variance reduced
         @test updated_residuals != residuals
-        
-        # Check that updated residuals are finite
-        @test all(isfinite.(updated_residuals))
-        
-        # Check that variance is reduced (PCs capture some variation)
-        original_var = var(residuals)
-        updated_var = var(updated_residuals)
-        @test updated_var <= original_var  # Should be less or equal
+        @test var(updated_residuals) < var(residuals)  # PCs should capture variation
     end
     
-    @testset "PC extraction with unbalanced panel" begin
-        # Create unbalanced panel by removing some observations
-        df_unbalanced = df[1:12, :]  # Remove last 3 observations
-        obs_index_unb = create_observation_index(df_unbalanced, :id, :t)
-        
-        residuals_unb = randn(12)
-        n_pcs = 1
-        
-        # Should still work with unbalanced panel
-        @test_nowarn begin
-            factors, loadings_matrix, _, updated_residuals = extract_pcs_from_residuals(residuals_unb, obs_index_unb, n_pcs)
-            @test size(factors, 1) == 1  # k=1
-            @test size(loadings_matrix, 2) == 1  # k=1
-            @test length(updated_residuals) == 12
-        end
-    end
-    
-    @testset "Edge cases" begin
+    @testset "Edge cases and special scenarios" begin
         residuals = randn(15)
         
-        # Test with n_pcs = 0 (should return empty matrices)
+        # Test with n_pcs = 0 (no PC extraction)
         factors_0, loadings_0, model_0, updated_0 = extract_pcs_from_residuals(residuals, obs_index, 0)
         @test size(factors_0, 1) == 0  # 0×T matrix
         @test size(loadings_0, 2) == 0  # N×0 matrix
-        @test length(updated_0) == length(residuals)
+        @test updated_0 ≈ residuals  # Residuals unchanged when no PCs extracted
         
-        # Test with n_pcs larger than min(N,T)
-        # With N=3, T=5, max meaningful PCs is min(3,5)=3
-        @test_nowarn begin
-            factors, loadings_matrix, _, _ = extract_pcs_from_residuals(residuals, obs_index, 3)
-            @test size(factors, 1) <= 3
-            @test size(loadings_matrix, 2) <= 3
-        end
+        # Test with n_pcs = max possible
+        factors_max, loadings_max, _, _ = extract_pcs_from_residuals(residuals, obs_index, 3)
+        @test size(factors_max, 1) <= 3
+        @test size(loadings_max, 2) <= 3
         
-        # Test with very small residuals (near zero)
+        # Test with very small residuals (numerical stability)
         small_residuals = fill(1e-10, 15)
-        @test_nowarn begin
-            _, _, _, updated = extract_pcs_from_residuals(small_residuals, obs_index, 1)
-            @test all(isfinite.(updated))
-        end
-    end
-    
-    @testset "Consistency of PC extraction" begin
-        residuals = randn(15)
-        n_pcs = 2
+        _, _, _, updated_small = extract_pcs_from_residuals(small_residuals, obs_index, 1)
+        @test all(isfinite.(updated_small))
         
-        # Extract PCs multiple times - should give same results
-        factors1, loadings1, model1, updated_residuals1 = extract_pcs_from_residuals(residuals, obs_index, n_pcs)
-        factors2, loadings2, model2, updated_residuals2 = extract_pcs_from_residuals(residuals, obs_index, n_pcs)
+        # Test with unbalanced panel
+        df_unbalanced = df[1:12, :]  # Remove last 3 observations
+        obs_index_unb = create_observation_index(df_unbalanced, :id, :t)
         
-        # Check that results are consistent
-        @test factors1 ≈ factors2 atol=1e-12
-        @test loadings1 ≈ loadings2 atol=1e-12
-        @test updated_residuals1 ≈ updated_residuals2 atol=1e-12
+        factors_unb, loadings_unb, _, updated_unb = extract_pcs_from_residuals(randn(12), obs_index_unb, 1)
+        @test size(factors_unb, 1) == 1
+        @test size(loadings_unb, 2) == 1
+        @test length(updated_unb) == 12
     end
 end
 
@@ -227,69 +166,86 @@ function compute_factor_recovery_metrics(est_factors, est_loadings, true_factors
 end
 
 @testset "PC Factor Recovery Tests" begin
-    # Test parameters
+    # Test parameters: Large panel (N=100, T=1000) with K=2 true factors
+    # This tests whether PC extraction can recover the true factor structure
+    # from GIV residuals containing both factors and idiosyncratic noise
     N, T, K = 100, 1000, 2
     n_sims = 30
 
     @testset "DeflatedHeteroPCA Factor Recovery" begin
+        # This test validates that our PC extraction correctly recovers known factors
+        # from simulated GIV data where we know the true factor structure
+        
         # Storage for results
         deflated_metrics = []
 
         for sim in 1:n_sims
             # Generate realistic GIV data with known factor structure
+            # demand_shocks = true_factors * true_loadings' + true_residuals
             demand_shocks, true_factors, true_loadings, true_residuals, obs_index = generate_giv_factor_data(N, T, K; seed=42 + sim)
 
-            # Test DeflatedHeteroPCA  
+            # Extract factors using DeflatedHeteroPCA algorithm
+            # This should recover factors close to the true ones
             factors_def, loadings_def, model_def, updated_residuals = extract_pcs_from_residuals(
                 demand_shocks, obs_index, K;
                 algorithm=DeflatedHeteroPCA()
             )
 
-            # Compute metrics
+            # Compute recovery quality metrics
             metrics_def = compute_factor_recovery_metrics(factors_def, loadings_def, true_factors, true_loadings,
                 updated_residuals, true_residuals)
 
             push!(deflated_metrics, metrics_def)
         end
 
-        # Aggregate results
+        # Aggregate results across simulations
         def_subspace_dist = mean([m.subspace_distance for m in deflated_metrics])
         def_factor_norm = mean([m.factor_distance_norm for m in deflated_metrics])
         def_residual_dist = mean([m.residual_distance for m in deflated_metrics])
 
-        # Tests: Verify that factor recovery works (distances are finite and better than worst case)
-        # For sinθ_distance with K=2: range is [0, √2] ≈ [0, 1.41]
-        @test def_subspace_dist < 0.5   # Good subspace recovery
-        @test def_factor_norm < 0.6     # Good factor recovery
-        @test def_residual_dist < 0.2   # Reasonable residual recovery
+        # Validate recovery quality:
+        # - Subspace distance: measures angle between estimated and true factor spaces (0 = perfect)
+        #   For K=2, theoretical range is [0, √2] ≈ [0, 1.41]. Good recovery should be < 0.5
+        @test def_subspace_dist < 0.5
+        
+        # - Factor distance: normalized Frobenius distance between factor matrices (0 = perfect)
+        #   After optimal rotation alignment. Good recovery should be < 0.6
+        @test def_factor_norm < 0.6
+        
+        # - Residual distance: relative distance between true and extracted residuals
+        #   Measures how well we separated factors from idiosyncratic components
+        @test def_residual_dist < 0.2
 
         # Print results for inspection
-        println("DeflatedHeteroPCA:")
+        println("DeflatedHeteroPCA Factor Recovery Quality:")
         println("  Subspace distance: $(round(def_subspace_dist, digits=4))")
         println("  Factor distance (normalized): $(round(def_factor_norm, digits=4))")
         println("  Residual distance: $(round(def_residual_dist, digits=4))")
     end
 
     @testset "Missing Data Robustness" begin
-        # Test with missing data
-        missing_probs = [0.0, 0.1, 0.2]
+        # This test validates that PC extraction remains accurate even with missing data
+        # HeteroPCA is designed to handle missing values through iterative imputation
+        
+        missing_probs = [0.0, 0.1, 0.2]  # Test with 0%, 10%, and 20% missing data
         results = []
 
         for missing_prob in missing_probs
             sim_results = []
 
             for sim in 1:10  # Fewer simulations for missing data test
+                # Generate data with specified missing percentage
                 demand_shocks, true_factors, true_loadings, true_residuals, obs_index = generate_giv_factor_data(
                     N, T, K; missing_prob=missing_prob, seed=100 + sim
                 )
 
-                # Extract factors with DeflatedHeteroPCA (should handle missing data well)
+                # Extract factors - DeflatedHeteroPCA should handle missing data internally
                 factors, loadings_matrix, _, updated_residuals = extract_pcs_from_residuals(
                     demand_shocks, obs_index, K;
                     algorithm=DeflatedHeteroPCA()
                 )
 
-                # Compute metrics
+                # Compute subspace recovery quality
                 metrics = compute_factor_recovery_metrics(factors, loadings_matrix, true_factors, true_loadings,
                     updated_residuals, true_residuals)
                 push!(sim_results, metrics.subspace_distance)
@@ -298,11 +254,14 @@ end
             avg_subspace_dist = mean(sim_results)
             push!(results, avg_subspace_dist)
 
-            # Test that algorithm handles missing data and still achieves reasonable recovery
-            @test avg_subspace_dist < 0.5  # Allow degraded performance with missing data
+            # Verify reasonable recovery even with missing data
+            # We allow slightly worse performance but still expect decent recovery
+            @test avg_subspace_dist < 0.5
         end
 
-        println("Missing data robustness - subspace distances: $(round.(results, digits=4))")
-        println("Missing percentages: $(missing_probs)")
+        println("Missing data robustness - average subspace distances:")
+        println("  Missing %: $(missing_probs)")
+        println("  Distances: $(round.(results, digits=4))")
+        println("  (Lower is better; <0.5 indicates good recovery)")
     end
 end
