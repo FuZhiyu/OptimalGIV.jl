@@ -162,12 +162,17 @@ function create_observation_index(df, id, t, exclude_pairs=Dict{Int,Vector{Int}}
         sort!(df, [t, id])
     end
 
-    N = length(unique(df[!, id]))
-    T = length(unique(df[!, t]))
+    # Use natural sort order to ensure consistency with StatsModels.jl
+    # This ensures residual_variance vector aligns with coefficient ordering
+    unique_ids = sort(unique(df[!, id]))
+    unique_times = sort(unique(df[!, t]))
+    
+    N = length(unique_ids)
+    T = length(unique_times)
 
-    # Get id mapping
-    id_map = Dict(unique(df[!, id]) .=> 1:N)
-    time_map = Dict(unique(df[!, t]) .=> 1:T)
+    # Get id mapping using sorted order
+    id_map = Dict(unique_ids .=> 1:N)
+    time_map = Dict(unique_times .=> 1:T)
 
     # Create vectors to store indices
     start_indices = zeros(Int, T)
@@ -199,7 +204,7 @@ function create_observation_index(df, id, t, exclude_pairs=Dict{Int,Vector{Int}}
         entity_obs_indices[entity_id, time_id] = i  # Store actual observation index
     end
 
-    exclpairs = create_exclusion_matrix(unique(df[!, id]), exclude_pairs)
+    exclpairs = create_exclusion_matrix(unique_ids, exclude_pairs)
 
     return ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclpairs, N, T)
 end
