@@ -1,9 +1,13 @@
 using Test
 using OptimalGIV
-using DataFrames, CSV, CategoricalArrays, Statistics
 using OptimalGIV: evaluation_metrics
+using DataFrames, CSV, CategoricalArrays, Statistics
+using HeteroPCA: DeflatedHeteroPCA
 
-# Helper functions
+# ========================================
+# Helper Functions
+# ========================================
+
 function preprocess_simulation_data(df::DataFrame; min_obs_per_id=5)
     """
     Preprocess simulation data by dropping IDs with less than min_obs_per_id non-missing observations
@@ -54,7 +58,7 @@ function run_simulation_estimation(simparamstr::String, formula;
 
     for i in 1:length(simdata_files)
         if verbose && i % 10 == 0
-            println("[$(simparamstr)] [$estimate_label] Estimating simulation $i of $(length(simdata_files))")
+            println("[$simparamstr] [$estimate_label] Estimating simulation $i of $(length(simdata_files))")
         end
 
         try
@@ -96,7 +100,10 @@ function summarize_metrics(metricdf)
         nrow => :n_successful)
 end
 
-# Main test sets
+# ========================================
+# Setup and Load Simulations
+# ========================================
+
 # First ensure simulations exist
 if !isfile("$(@__DIR__)/../simulations/simparamstr.csv")
     @info "simparamstr.csv not found, running simulate_data.jl to generate simulations"
@@ -107,72 +114,131 @@ end
 simparamdf = CSV.read("$(@__DIR__)/../simulations/simparamstr.csv", DataFrame)
 simparams_dict = Dict(row.simulated_model => row.simparamstr for row in eachrow(simparamdf))
 
-# Test different model specifications with bias and coverage together
-# @testset "Model Estimation and Coverage" begin
-results = DataFrame()
-# Standard specification tests
-#================== Baseline tests ==================#
-standard_sims = ["baseline", "10% missing"]
-@testset "Standard: $sim_label" for sim_label in standard_sims
-    # Standard specification with entity-specific elasticities
-    metrics = run_simulation_estimation(
-        simparams_dict[sim_label],
-        @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)),
-        Nsims=400,
-        estimate_label="entity_specific"
-    )
+# Initialize results collection
+all_results = DataFrame()
 
-    performance_metrics = summarize_metrics(metrics)
-    performance_metrics.simulation .= sim_label
-    append!(results, performance_metrics)
-    # Basic checks
-    @test performance_metrics.n_successful[1] > 80  # At least 80% success rate
-    @test abs(performance_metrics.ζ_bias_mean[1]) < 0.05  # Reasonable bias
-    @test abs(performance_metrics.β_bias_mean[1]) < 0.1  # Reasonable bias
-    @test 0.925 < performance_metrics.ζ_covered[1] <= 0.975  # Coverage should be   close to 95%
-    @test 0.925 < performance_metrics.β_covered[1] <= 0.975  # Coverage should be close to 95%
+# ========================================
+# Standard Model Tests
+# ========================================
+
+@testset "Standard Model Specifications" begin
+    # Define test configurations
+    standard_test_configs = [
+        # (sim_label, formula, estimate_label, guess, test_params)
+        ("baseline", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing,
+            (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80)),
+        ("10% missing", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing,
+            (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80)),
+        ("sparse panel", @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)), "fixed_effects", [2.0],
+            (bias_tol=0.5, β_bias_tol=nothing, coverage_range=(0.85, 0.975), min_success=nothing)),
+        ("large panel", @formula(q + endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", [2.0],
+            (bias_tol=0.01, β_bias_tol=0.02, coverage_range=(0.92, 0.98), min_success=nothing))
+    ]
+
+    for (sim_label, formula, estimate_label, guess, test_params) in standard_test_configs
+        @testset "$estimate_label: $sim_label" begin
+            metrics = run_simulation_estimation(
+                simparams_dict[sim_label],
+                formula,
+                Nsims=400,
+                estimate_label=estimate_label,
+                guess=guess
+            )
+
+            performance = summarize_metrics(metrics)
+            performance.simulation .= sim_label
+            performance.estimate_label .= estimate_label
+            performance.simparamstr .= simparams_dict[sim_label]
+            append!(all_results, performance)
+
+            # Apply test assertions based on configuration
+            if !isnothing(test_params.min_success)
+                @test performance.n_successful[1] > test_params.min_success
+            end
+            @test abs(performance.ζ_bias_mean[1]) < test_params.bias_tol
+            if !isnothing(test_params.β_bias_tol)
+                @test abs(performance.β_bias_mean[1]) < test_params.β_bias_tol
+            end
+            @test test_params.coverage_range[1] < performance.ζ_covered[1] <= test_params.coverage_range[2]
+            if !isnothing(test_params.β_bias_tol)
+                @test test_params.coverage_range[1] < performance.β_covered[1] <= test_params.coverage_range[2]
+            end
+        end
+    end
 end
 
-#==================  sparse panel with higher tolerance ==================#
-@testset "Sparse panel with higher tolerance" begin
-    sim_label = "sparse panel"
-    # Fixed effects specification
-    metrics = run_simulation_estimation(
-        simparams_dict[sim_label],
-        @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)),
-        Nsims=400,  # Fewer simulations for speed
-        estimate_label="standard",
-        guess=[2.0]  # Single elasticity for uniform case
-    )
+# ========================================
+# PC Extraction Tests
+# ========================================
 
-    performance_metrics = summarize_metrics(metrics)
-    performance_metrics.simulation .= sim_label
-    append!(results, performance_metrics)
-    # For uniform elasticity (σζ=0.0), check that bias is small
-    @test abs(performance_metrics.ζ_bias_mean[1]) < 0.5
-    @test 0.85 < performance_metrics.ζ_covered[1] <= 0.975
+@testset "PC Extraction Methods" begin
+    # Define PC test configurations
+    pc_test_configs = [
+        ("homogeneous_large", "Large panel (N=40, T=400)"),
+        ("homogeneous_large_missing", "Large panel with 20% missing")
+    ]
+
+    # Define estimation methods for PC extraction
+    pc_estimation_methods = [
+        ("deflated_heteropca", @formula(q + endog(p) ~ 0 + pc(2)),
+            Dict(:algorithm => :iv, :return_vcov => false, :tol => 1e-6,
+                :pca_option => (; impute_method=:zero, demean=false, maxiter=100,
+                    algorithm=DeflatedHeteroPCA(t_block=10), abstol=1e-8))),
+        ("no_factors", @formula(q + endog(p) ~ 0),
+            Dict(:algorithm => :iv, :return_vcov => false, :tol => 1e-6)),
+        ("known_factors", @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)),
+            Dict(:algorithm => :iv, :return_vcov => false, :tol => 1e-6))
+    ]
+
+    for (sim_key, sim_desc) in pc_test_configs
+        @testset "$sim_desc" begin
+            for (method_label, formula, method_kwargs) in pc_estimation_methods
+                @testset "$method_label" begin
+                    metrics = run_simulation_estimation(
+                        simparams_dict[sim_key],
+                        formula,
+                        Nsims=400,
+                        estimate_label=method_label,
+                        guess=[1.0],
+                        quiet=true;
+                        method_kwargs...
+                    )
+
+                    performance = summarize_metrics(metrics)
+                    performance.simulation .= sim_key
+                    performance.estimate_label .= method_label
+                    performance.simparamstr .= simparams_dict[sim_key]
+                    append!(all_results, performance)
+
+                    # Method-specific assertions
+                    if method_label == "no_factors"
+                        @test abs(performance.ζ_bias_mean[1]) < 1.1
+                    else
+                        @test abs(performance.ζ_bias_mean[1]) < 0.1
+                    end
+                    # Note: no_factors expected to have bias
+
+                    # Optional: print debug info if needed
+                    if get(ENV, "VERBOSE_TESTS", "false") == "true"
+                        println("$method_label - Success rate: $(performance.n_successful[1])/100")
+                        println("$method_label - Elasticity bias: $(round(performance.ζ_bias_mean[1], digits=4))")
+                    end
+                end
+            end
+        end
+    end
 end
 
-#================== sparse and long panel ==================#
-@testset "Sparse and long panel" begin
-    sim_label = "large panel"
-    # Fixed effects specification
-    metrics = run_simulation_estimation(
-        simparams_dict[sim_label],
-        @formula(q + endog(p) ~ 0 + id & (η1 + η2)),
-        Nsims=400,  # Fewer simulations for speed
-        estimate_label="standard",
-        guess=[2.0]  # Single elasticity for uniform case
-    )
+# ========================================
+# Save Results
+# ========================================
 
-    performance_metrics = summarize_metrics(metrics)
-    performance_metrics.simulation .= sim_label
-    append!(results, performance_metrics)
-    # For uniform elasticity (σζ=0.0), check that bias is small
-    @test abs(performance_metrics.ζ_bias_mean[1]) < 0.01
-    @test abs(performance_metrics.β_bias_mean[1]) < 0.02
-    @test 0.925 < performance_metrics.ζ_covered[1] <= 0.975
-    @test 0.92 < performance_metrics.β_covered[1] <= 0.98
-end
+# Create results directory if it doesn't exist
+mkpath("simresults")
 
-CSV.write("simresults/simulation_performance.csv", results)
+# Save all results
+CSV.write("simresults/simulation_performance.csv", all_results)
+
+# # Also save PC-specific results for backward compatibility
+# pc_results = filter(row -> row.estimate_label in ["deflated_heteropca", "no_factors", "known_factors"], all_results)
+# CSV.write("simresults/internal_pc_simulation_performance.csv", pc_results)

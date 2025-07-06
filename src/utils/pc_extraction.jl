@@ -94,7 +94,7 @@ function extract_pcs_from_residuals(residuals, obs_index, n_pcs; kwargs...)
     residual_matrix = vector_to_matrix(residuals, obs_index)
     
     # Extract PCs using HeteroPCA with provided options
-    default_options = (impute_method=:zero, demean=false, maxiter=1000)
+    default_options = (impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10))
     pca_options = merge(default_options, kwargs)
     pca_model = heteropca(residual_matrix, n_pcs; pca_options...)
     
