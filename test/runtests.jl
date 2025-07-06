@@ -6,6 +6,7 @@ tests = [
     "test_observation_index.jl",
     "test_interface.jl",
     "test_estimates.jl",
+    "test_ols_step.jl",
     "test_algorithm_equivalence.jl",
     # "test_with_simulations.jl"  # slow; not run in CI
 ]
