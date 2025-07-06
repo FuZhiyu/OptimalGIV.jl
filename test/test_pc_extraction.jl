@@ -1,6 +1,8 @@
-using Test, OptimalGIV, DataFrames, Random, Statistics
-using HeteroPCA: HeteroPCAModel, predict, reconstruct
+using Test, OptimalGIV, DataFrames, Random, Statistics, LinearAlgebra
+using HeteroPCA: HeteroPCAModel, DeflatedHeteroPCA
+using HeteroPCA: matrix_distance, sinθ_distance
 using OptimalGIV: vector_to_matrix, matrix_to_vector, extract_pcs_from_residuals, create_observation_index
+using OptimalGIV: simulate_data
 
 @testset "PC Extraction Utilities Tests" begin
     Random.seed!(123)
@@ -135,5 +137,172 @@ using OptimalGIV: vector_to_matrix, matrix_to_vector, extract_pcs_from_residuals
         @test factors1 ≈ factors2 atol=1e-12
         @test loadings1 ≈ loadings2 atol=1e-12
         @test updated_residuals1 ≈ updated_residuals2 atol=1e-12
+    end
+end
+
+# ========================================
+# Simulation-Based PC Extraction Tests
+# ========================================
+
+"""
+    generate_giv_factor_data(N, T, K; missing_prob=0.0, seed=42)
+
+Generate realistic GIV simulation data with known factor structure.
+
+Returns:
+- `demand_shocks`: Vector of demand shocks containing the factor structure  
+- `true_factors`: K×T matrix of true factors (η)
+- `true_loadings`: N×K matrix of true loadings (Λ)
+- `true_residuals`: Vector of true idiosyncratic residuals (u)
+- `obs_index`: Observation index for the panel
+"""
+function generate_giv_factor_data(N::Int, T::Int, K::Int;
+    missing_prob::Float64=0.0,
+    seed::Int=42)
+    # Use existing GIV simulation infrastructure
+    simparams = (N=N, T=T, K=K, σζ=0.1, missingperc=missing_prob)
+    simdata = simulate_data(simparams; Nsims=1, seed=seed)[1]
+
+    # Extract factor and loading column names
+    factor_cols = [Symbol("η$i") for i in 1:K]
+    loading_cols = [Symbol("λ$i") for i in 1:K]
+
+    # Extract true factors - they're repeated for each entity, so take unique values
+    factors_df = unique(simdata[!, [:t; factor_cols]], :t)
+    sort!(factors_df, :t)
+    factors_matrix = Matrix(factors_df[!, factor_cols])  # T×K
+    true_factors = factors_matrix'  # K×T (transpose)
+
+    # Extract true loadings - they're repeated for each time period, so take unique values  
+    loadings_df = unique(simdata[!, [:id; loading_cols]], :id)
+    sort!(loadings_df, :id)
+    true_loadings = Matrix(loadings_df[!, loading_cols])  # N×K
+
+    # Construct demand shocks: q + ζ * p (this contains the factor structure)
+    # Work directly with the vectors to handle missing data properly
+    demand_shocks_vector = simdata.q + simdata.ζ .* simdata.p
+
+    # Create observation index
+    df = DataFrame(
+        id=simdata.id,
+        t=simdata.t,
+        value=demand_shocks_vector,
+        u=simdata.u  # Include true residuals
+    )
+
+    # Remove missing observations
+    df = dropmissing(df, [:value, :u])
+
+    obs_index = create_observation_index(df, :id, :t)
+    demand_shocks = df.value
+    true_residuals = df.u
+
+    return demand_shocks, true_factors, true_loadings, true_residuals, obs_index
+end
+
+"""
+    compute_factor_recovery_metrics(est_factors, est_loadings, true_factors, true_loadings, 
+                                  updated_residuals, true_residuals)
+
+Compute distance metrics for factor recovery and residual comparison.
+"""
+function compute_factor_recovery_metrics(est_factors, est_loadings, true_factors, true_loadings,
+    updated_residuals, true_residuals)
+    # 1. Subspace distance - measures angle between factor spaces (scale-invariant)
+    subspace_distance = sinθ_distance(est_loadings, true_loadings)
+
+    # 2. Normalized factor distance - factors normalized to unit Frobenius norm
+    true_factors_norm = true_factors ./ norm(true_factors, 2)
+    est_factors_norm = est_factors ./ norm(est_factors, 2)
+    factor_distance_norm = matrix_distance(est_factors_norm', true_factors_norm', align=true, relative=false)
+
+    # 3. Residual comparison - distance between extracted residuals and true residuals
+    residual_distance = norm(updated_residuals - true_residuals) / norm(true_residuals)
+
+    return (
+        subspace_distance=subspace_distance,
+        factor_distance_norm=factor_distance_norm,
+        residual_distance=residual_distance
+    )
+end
+
+@testset "PC Factor Recovery Tests" begin
+    # Test parameters
+    N, T, K = 100, 1000, 2
+    n_sims = 30
+
+    @testset "DeflatedHeteroPCA Factor Recovery" begin
+        # Storage for results
+        deflated_metrics = []
+
+        for sim in 1:n_sims
+            # Generate realistic GIV data with known factor structure
+            demand_shocks, true_factors, true_loadings, true_residuals, obs_index = generate_giv_factor_data(N, T, K; seed=42 + sim)
+
+            # Test DeflatedHeteroPCA  
+            factors_def, loadings_def, model_def, updated_residuals = extract_pcs_from_residuals(
+                demand_shocks, obs_index, K;
+                algorithm=DeflatedHeteroPCA()
+            )
+
+            # Compute metrics
+            metrics_def = compute_factor_recovery_metrics(factors_def, loadings_def, true_factors, true_loadings,
+                updated_residuals, true_residuals)
+
+            push!(deflated_metrics, metrics_def)
+        end
+
+        # Aggregate results
+        def_subspace_dist = mean([m.subspace_distance for m in deflated_metrics])
+        def_factor_norm = mean([m.factor_distance_norm for m in deflated_metrics])
+        def_residual_dist = mean([m.residual_distance for m in deflated_metrics])
+
+        # Tests: Verify that factor recovery works (distances are finite and better than worst case)
+        # For sinθ_distance with K=2: range is [0, √2] ≈ [0, 1.41]
+        @test def_subspace_dist < 0.5   # Good subspace recovery
+        @test def_factor_norm < 0.6     # Good factor recovery
+        @test def_residual_dist < 0.2   # Reasonable residual recovery
+
+        # Print results for inspection
+        println("DeflatedHeteroPCA:")
+        println("  Subspace distance: $(round(def_subspace_dist, digits=4))")
+        println("  Factor distance (normalized): $(round(def_factor_norm, digits=4))")
+        println("  Residual distance: $(round(def_residual_dist, digits=4))")
+    end
+
+    @testset "Missing Data Robustness" begin
+        # Test with missing data
+        missing_probs = [0.0, 0.1, 0.2]
+        results = []
+
+        for missing_prob in missing_probs
+            sim_results = []
+
+            for sim in 1:10  # Fewer simulations for missing data test
+                demand_shocks, true_factors, true_loadings, true_residuals, obs_index = generate_giv_factor_data(
+                    N, T, K; missing_prob=missing_prob, seed=100 + sim
+                )
+
+                # Extract factors with DeflatedHeteroPCA (should handle missing data well)
+                factors, loadings_matrix, _, updated_residuals = extract_pcs_from_residuals(
+                    demand_shocks, obs_index, K;
+                    algorithm=DeflatedHeteroPCA()
+                )
+
+                # Compute metrics
+                metrics = compute_factor_recovery_metrics(factors, loadings_matrix, true_factors, true_loadings,
+                    updated_residuals, true_residuals)
+                push!(sim_results, metrics.subspace_distance)
+            end
+
+            avg_subspace_dist = mean(sim_results)
+            push!(results, avg_subspace_dist)
+
+            # Test that algorithm handles missing data and still achieves reasonable recovery
+            @test avg_subspace_dist < 0.5  # Allow degraded performance with missing data
+        end
+
+        println("Missing data robustness - subspace distances: $(round.(results, digits=4))")
+        println("Missing percentages: $(missing_probs)")
     end
 end
