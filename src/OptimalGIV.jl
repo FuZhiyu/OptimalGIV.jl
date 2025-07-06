@@ -19,6 +19,7 @@ using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, Fixed
 using FixedEffects: solve_residuals!, solve_coefficients!
 @reexport using StatsAPI
 
+include("utils/observation_index.jl")
 include("givmodels.jl")
 include("interface.jl")
 include("estimation.jl")
@@ -30,10 +31,11 @@ include("utils/ols_fe_solver.jl")
 include("simulation.jl")
 # include("gmm.jl")
 
-export GIVModel
+export GIVModel, ObservationIndex
 export @formula, endog
 export giv,
-    estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, build_error_function, simulate_data, extract_raw_matrices
+    estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, build_error_function, simulate_data, extract_raw_matrices,
+    create_observation_index, create_exclusion_matrix, vector_to_matrix, matrix_to_vector
 export coef,
     endog_coef,
     exog_coef,

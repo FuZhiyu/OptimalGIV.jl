@@ -3,6 +3,7 @@ using Test
 
 tests = [
     "test_formula.jl",
+    "test_observation_index.jl",
     "test_interface.jl",
     "test_estimates.jl",
     "test_algorithm_equivalence.jl",

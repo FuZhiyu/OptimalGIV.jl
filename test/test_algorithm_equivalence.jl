@@ -1,6 +1,6 @@
 using Test, OptimalGIV, Random, LinearAlgebra
-using OptimalGIV: moment_conditions, ObservationIndex
-using DataFrames, CSV
+using OptimalGIV: moment_conditions, ObservationIndex, create_observation_index
+using DataFrames, CSV, CategoricalArrays
 
 @testset "moment_conditions iv vs iv_legacy" begin
     # Set random seed for reproducibility

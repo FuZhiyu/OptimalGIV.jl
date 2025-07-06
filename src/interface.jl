@@ -398,27 +398,6 @@ function create_coef_dataframe(df, formula_schema, coef, id)
     return categories
 end
 
-
-function create_exclusion_matrix(id_values, exclude_pairs)
-    # Create mapping from id to index
-    id2ind = Dict(id_values[i] => i for i in 1:length(id_values))
-    N = length(id_values)
-    # Initialize exclusion matrix
-    exclmat = zeros(Bool, N, N)
-
-    # Fill in exclusions based on provided pairs
-    for (id1, id2vec) in exclude_pairs
-        i = id2ind[id1]
-        for id2 in id2vec
-            j = id2ind[id2]
-            exclmat[i, j] = true
-            exclmat[j, i] = true  # Make it symmetric
-        end
-    end
-
-    return BitArray(exclmat)
-end
-
 """
 Check if the market clearing condition (adding-up constraint) is satisfied for each time period.
 

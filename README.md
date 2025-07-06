@@ -164,6 +164,20 @@ model.coefdf             # DataFrame with entity-specific coefficients (see belo
 model.converged          # Convergence status
 ```
 
+#### Ordering of Results
+
+All categorical variables in the model follow their **natural sort order**:
+- For numeric categories: sorted numerically (e.g., 3, 5, 10, 20)
+- For string categories: sorted alphabetically (e.g., "firm_A", "firm_B", "firm_C")
+
+This applies to:
+- Coefficient vectors when categorical variables are used in interactions
+- The residual variance vector (`model.residual_variance`), which follows the entity ID order
+- The `model.coefdf` DataFrame, which organizes results by categorical variables
+
+Additionally:
+- Any DataFrame returned by the model (e.g., when `save_df = true`) is sorted by `[t, id]`
+
 #### Entity-specific Coefficients DataFrame (`coefdf`)
 
 The `model.coefdf` field provides a convenient way to access and report coefficients organized by categorical variables (e.g., by sector, entity, or other groupings). This DataFrame contains:
