@@ -14,14 +14,15 @@ Estimate models using granular instrument variables (GIV), the optimal flavor.
 
 The GIV model estimated by this package follows the specification:
 
-$$\begin{aligned}
+```math
+\begin{aligned}
 \left.\begin{array}{c}
 \begin{array}{cl}
 q_{i,t} & =-p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{\zeta}+\mathbf{X}_{i,t}'\boldsymbol{\beta}+u_{i,t},\\
 0 & =\sum_{i}S_{i,t}q_{i,t}
 \end{array}\end{array}\right\} \implies & p_{t}=\frac{1}{\mathbf{C}_{S,t}'\boldsymbol{\zeta}}\left[\mathbf{X}_{S,t}'\boldsymbol{\beta}+u_{S,t}\right],
 \end{aligned}
-$$
+```
 
 where $q_{i,t}$ and $p_{t}$ are endogenous, $S$ is the weighting variable $X_S$ indicates $S$ weighted summation. 
 

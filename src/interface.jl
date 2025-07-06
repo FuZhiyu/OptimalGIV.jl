@@ -195,6 +195,8 @@ function giv(
         fedf = select(df, fekeys)
         fedf = retrieve_fixedeffects!(fedf, Y_original * [one(eltype(ζ̂)); ζ̂] - X_original * β, feM, feids)
         unique!(fedf, fekeys)
+        # Merge fixed effects into coefdf as documented
+        coefdf = leftjoin(coefdf, fedf, on=intersect(names(coefdf), names(fedf)))
     else
         fedf = nothing
     end
