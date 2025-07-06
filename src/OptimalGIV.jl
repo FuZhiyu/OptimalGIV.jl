@@ -18,6 +18,7 @@ using PrecompileTools
 using FixedEffectModels: parse_fe, parse_fixedeffect, fe, FixedEffectTerm, FixedEffectModel, AbstractFixedEffectSolver, invsym!, has_fe
 using FixedEffects: solve_residuals!, solve_coefficients!
 @reexport using StatsAPI
+@reexport using HeteroPCA
 
 include("utils/observation_index.jl")
 include("givmodels.jl")
@@ -26,13 +27,14 @@ include("estimation.jl")
 include("scalar_search.jl")
 include("utils/formula.jl")
 include("utils/ols_fe_solver.jl")
+include("utils/pc_extraction.jl")
 # include("utils/delta_method.jl")
 
 include("simulation.jl")
 # include("gmm.jl")
 
 export GIVModel, ObservationIndex
-export @formula, endog
+export @formula, endog, pc
 export giv,
     estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, build_error_function, simulate_data, extract_raw_matrices,
     create_observation_index, create_exclusion_matrix, vector_to_matrix, matrix_to_vector

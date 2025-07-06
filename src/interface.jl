@@ -79,6 +79,8 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 - `iterations::Int = 100`: Maximum number of iterations for the solver.
 - `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
     Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
+- `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
+    Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
 # Output
 
@@ -94,6 +96,8 @@ The output is `m::GIVModel`. Several important fields are:
   - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
 
 """
+
+
 function giv(
     df,
     formula::FormulaTerm,
@@ -112,10 +116,11 @@ function giv(
     tol=1e-6,
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
+    pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
     response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
@@ -159,13 +164,15 @@ function giv(
         quiet=quiet,
         complete_coverage=complete_coverage,
         solver_options=solver_options,
+        n_pcs=n_pcs,
+        pca_option=pca_option,
     )
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
     β = β_q + β_Cp * ζ̂
 
     û = uq + uCp * ζ̂
-    if return_vcov
+    if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off. 
         if complete_coverage
             σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
         else
@@ -197,6 +204,17 @@ function giv(
     ζS = solve_aggregate_elasticity(ζ̂, C, S, obs_index; complete_coverage=complete_coverage)
     ζS = length(unique(ζS)) == 1 ? ζS[1] : ζS
 
+    # Extract PCs from final residuals if requested and update residuals
+    pc_factors = nothing
+    pc_loadings = nothing
+    pc_model = nothing
+
+    if n_pcs > 0
+        pc_factors, _, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
+        # !the saved û is the residuals after the PCs
+        pc_loadings = projection(pc_model) # important: save the projection so that projection x factors = predicted values
+    end
+
     dof = length(ζ̂) + length(β)
     dof_residual = nrow(df) - dof
 
@@ -219,6 +237,26 @@ function giv(
         sort!(savedf, [t, id])
     else
         savedf = nothing
+    end
+
+
+    # If saving dataframe and PC factors were extracted, add them to savedf
+    if save_df && n_pcs > 0 && !isnothing(pc_factors)
+        # Add PC factors to savedf (factors are k×T, so we need pc_factors[k, :])
+        time_pc_df = DataFrame(t => unique(df[!, t]))
+        for k in 1:n_pcs
+            time_pc_df[!, Symbol("pc_factor_", k)] = pc_factors[k, :]
+        end
+        savedf = leftjoin(savedf, time_pc_df, on=t)
+
+        # Add PC loadings to savedf (loadings are by entity)
+        if !isnothing(pc_loadings)
+            entity_loading_df = DataFrame(id => unique(df[!, id]))
+            for k in 1:n_pcs
+                entity_loading_df[!, Symbol("pc_loading_", k)] = pc_loadings[:, k]
+            end
+            savedf = leftjoin(savedf, entity_loading_df, on=id)
+        end
     end
 
     return GIVModel(
@@ -247,6 +285,12 @@ function giv(
         resdf,
         savedf,
 
+        # PC-related fields
+        n_pcs,
+        pc_factors,
+        pc_loadings,
+        pc_model,
+
         converged,
         N,
         obs_index.T,
@@ -262,7 +306,7 @@ end
 A convenience function to obtain the name of variables from the original formula. 
 """
 function get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     return get_coefnames(formula_givcore, formula_schema)
 end
 
@@ -335,7 +379,7 @@ end
 function extract_raw_matrices(df, formula, id, t, weight; contrasts=Dict{Symbol,Any}(), exclude_pairs=Dict{Int,Vector{Int}}())
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
     response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
@@ -444,11 +488,12 @@ function build_error_function(df,
     complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
     contrasts=Dict{Symbol,Any}(), # not tested; 
     tol=1e-6,
+    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     kwargs...
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
-    formula_givcore, formula_schema, fes, feids, fekeys = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
+    formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
     # regress the left-hand side q, and Cp on the right-hand side
 
     response_name, endog_name, endog_coefnames, exog_coefnames, slope_terms = get_coefnames(formula_givcore, formula_schema)
@@ -499,7 +544,7 @@ function build_error_function(df,
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
-        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}())
-        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index)
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option)
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs)
     end
 end

@@ -10,31 +10,24 @@ using DataFrames, CSV, CategoricalArrays
     N, T = 20, 5
     Nmom = 3
 
+    # Create test DataFrame for proper observation index creation
+    df = DataFrame(
+        id=repeat(1:N, outer=T),
+        t=repeat(1:T, inner=N),
+        dummy=ones(N * T)  # Dummy column for DataFrame completeness
+    )
+
     # Generate random data
     q = randn(N * T)
     Cp = randn(N * T, Nmom)
     C = randn(N * T, Nmom)
     S = randn(N * T)
 
-    # Create observation index structure
-    ids = repeat(1:N, outer=T)
-    start_indices = [(t - 1) * N + 1 for t in 1:T]
-    end_indices = [t * N for t in 1:T]
-
-    # Create entity_obs_indices matrix for mapping entities to observation indices
-    entity_obs_indices = zeros(Int, N, T)
-    for t in 1:T
-        for i in 1:N
-            idx = (t - 1) * N + i
-            entity_obs_indices[i, t] = idx
-        end
-    end
-
 
     # Test case 1: No exclusions
     @testset "No exclusions" begin
-        exclmat = BitArray(zeros(N, N))
-        obs_index = ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclmat, N, T)
+        # Use existing function to create observation index
+        obs_index = create_observation_index(df, :id, :t)
 
         for _ in 1:3
             ζ = randn(Nmom)
@@ -51,17 +44,21 @@ using DataFrames, CSV, CategoricalArrays
 
     # Test case 2: With exclusions
     @testset "With exclusions" begin
-        # Create exclusion matrix (sparse to test actual exclusions)
-        exclmat = falses(N, N)
+        # Create exclusion pairs dictionary
+        exclude_pairs = Dict{Int,Vector{Int}}()
         for i in 1:N
             for j in i+1:N
                 # Exclude about 20% of pairs randomly
                 if rand() < 0.2
-                    exclmat[i, j] = exclmat[j, i] = true
+                    if !haskey(exclude_pairs, i)
+                        exclude_pairs[i] = Int[]
+                    end
+                    push!(exclude_pairs[i], j)
                 end
             end
         end
-        obs_index = ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclmat, N, T)
+        # Use existing function to create observation index with exclusions
+        obs_index = create_observation_index(df, :id, :t, exclude_pairs)
 
         for _ in 1:3
             ζ = randn(Nmom)
@@ -78,7 +75,81 @@ using DataFrames, CSV, CategoricalArrays
 end
 
 
+@testset "PC extraction equivalence" begin
+    # Set random seed for reproducibility
+    Random.seed!(12345)
+
+    # Create test data
+    N, T = 20, 5
+    Nmom = 3
+    n_pcs = 2  # Number of principal components to extract
+
+    # Create test DataFrame for proper observation index creation
+    df = DataFrame(
+        id=repeat(1:N, outer=T),
+        t=repeat(1:T, inner=N),
+        dummy=ones(N * T)  # Dummy column for DataFrame completeness
+    )
+
+    # Generate random data
+    q = randn(N * T)
+    Cp = randn(N * T, Nmom)
+    C = randn(N * T, Nmom)
+    S = randn(N * T)
+
+    # Test case 1: No exclusions with PC extraction
+    @testset "No exclusions with PC extraction" begin
+        # Use existing function to create observation index
+        obs_index = create_observation_index(df, :id, :t)
+
+        for _ in 1:3
+            ζ = randn(Nmom)
+
+            # Compute moment conditions using both methods with PC extraction
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_twopass), n_pcs)
+            err_new = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv), n_pcs)
+
+            # Test that the results are identical within numerical precision
+            @test size(err_legacy) == size(err_new)
+            @test all(isapprox.(err_legacy, err_new, rtol=1e-10))
+        end
+    end
+
+    # Test case 2: With exclusions and PC extraction
+    @testset "With exclusions and PC extraction" begin
+        # Create exclusion pairs dictionary
+        exclude_pairs = Dict{Int,Vector{Int}}()
+        for i in 1:N
+            for j in i+1:N
+                # Exclude about 20% of pairs randomly
+                if rand() < 0.2
+                    if !haskey(exclude_pairs, i)
+                        exclude_pairs[i] = Int[]
+                    end
+                    push!(exclude_pairs[i], j)
+                end
+            end
+        end
+        # Use existing function to create observation index with exclusions
+        obs_index = create_observation_index(df, :id, :t, exclude_pairs)
+
+        for _ in 1:3
+            ζ = randn(Nmom)
+
+            # Compute moment conditions using both methods with PC extraction
+            err_legacy = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv_twopass), n_pcs)
+            err_new = moment_conditions(ζ, q, Cp, C, S, obs_index, true, Val(:iv), n_pcs)
+
+            # Test that the results are identical within numerical precision
+            @test size(err_legacy) == size(err_new)
+            @test all(isapprox.(err_legacy, err_new, rtol=1e-10))
+        end
+    end
+end
+
+
 @testset "standard error equivalence" begin
+    using CategoricalArrays
     df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
     df.id = CategoricalArray(df.id)
     givmodel = giv(
@@ -88,9 +159,10 @@ end
         :t,
         :absS;
         guess=ones(5),
+        quiet=true,
         algorithm=:iv_twopass,
     )
-    
+
     givmodel2 = giv(
         df,
         @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0),
@@ -98,6 +170,7 @@ end
         :t,
         :absS;
         guess=ones(5),
+        quiet=true,
         algorithm=:iv_twopass,
         complete_coverage=false, # use the nonoptimal vcov algorithm
     )

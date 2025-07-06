@@ -9,6 +9,8 @@ function estimate_giv(
     quiet=false,
     complete_coverage=true,
     solver_options=(;),
+    n_pcs=0,
+    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
 ) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -18,13 +20,13 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A())
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option)
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A()),
+        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option),
         guess;
         solver_options...,
     )
@@ -39,15 +41,21 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000))
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
 
     # Calculate residuals
     u = q + Cp * ζ
+    
+    # Extract PCs and update residuals if requested
+    loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
+    if n_pcs > 0
+        _, loadings_matrix, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
+    end
 
-    # Calculate variance by entity
+    # Calculate variance by entity using updated residuals
     σu²vec = calculate_entity_variance(u, obs_index)
     precision = 1 ./ σu²vec
     # precision = precision ./ sum(precision)
@@ -83,7 +91,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                         continue
                     end
 
-                    err[imom, t] += u[idx_i] * u[idx_j] * weight_i * S[idx_j]
+                    empirical_cov = u[idx_i] * u[idx_j]
+                    expected_cov = n_pcs > 0 ? dot(loadings_matrix[i, :], loadings_matrix[j, :]) : zero(eltype(ζ))
+                    err[imom, t] += (empirical_cov - expected_cov) * weight_i * S[idx_j]
                     weightsum[imom, t] += weight_i * S[idx_j]
                 end
 
@@ -108,7 +118,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                         continue
                     end
 
-                    err[imom, t] += u[idx_i] * u[idx_j] * weight_j * S[idx_i]
+                    empirical_cov = u[idx_i] * u[idx_j]
+                    expected_cov = n_pcs > 0 ? dot(loadings_matrix[i, :], loadings_matrix[j, :]) : zero(eltype(ζ))
+                    err[imom, t] += (empirical_cov - expected_cov) * weight_j * S[idx_i]
                     weightsum[imom, t] += weight_j * S[idx_i]
                 end
 
@@ -136,9 +148,10 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000))
+
     Nm = length(ζ)
-    T = obs_index.T
+    N, T = obs_index.N, obs_index.T
     # Compute period weights if complete_coverage constraint holds
     Mweights = ones(eltype(ζ), T)
     if complete_coverage
@@ -150,15 +163,22 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
     # residuals and entity-level precision ------------------------------
     u = q .+ Cp * ζ
+
+    # Extract PCs and update residuals if requested
+    loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
+    if n_pcs > 0
+        _, loadings_matrix, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
+    end
+
     σu²vec = calculate_entity_variance(u, obs_index)
     prec = inv.(σu²vec)
 
     weightsum = zeros(eltype(ζ), Nm, T)
     # 1️⃣ fast O(N) pass
-    fast_pass!(weightsum, err, u, C, S, prec, obs_index)
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings_matrix, n_pcs)
 
     # 2️⃣ subtract excluded pairs
-    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings_matrix, n_pcs)
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
@@ -182,7 +202,7 @@ end
 # ----------------------------------------------------------------------
 #  FAST  O(N)  PASS   (fills only `err`)
 # ----------------------------------------------------------------------
-function fast_pass!(weightsum, err, u, C, S, prec, obs_index)
+function fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings_matrix=Matrix{eltype(err)}(undef, 0, 0), n_pcs=0)
     Nm = size(err, 1)
     T = obs_index.T
 
@@ -228,6 +248,27 @@ function fast_pass!(weightsum, err, u, C, S, prec, obs_index)
                 # Fused operations for better performance
                 err[m, t] = sum(a_vec) * b_total - sum(diag_ab)
 
+                # Factor correction if n_pcs > 0
+                if n_pcs > 0
+                    # Get loadings for entities in this time period
+                    loadings_t = loadings_matrix[ids_t, :]  # length(r) × n_pcs
+
+                    # Compute factor correction terms for each PC
+                    for k in 1:n_pcs
+                        loadings_k = loadings_t[:, k]
+                        loadings_k_nz = loadings_k[nz_buffer]
+
+                        # Total loadings for this factor across all entities
+                        total_loadings_k = sum(S_t .* loadings_k)
+
+                        # Factor correction using mathematical identity
+                        factor_correction_k = sum(weight_vec .* loadings_k_nz) * total_loadings_k -
+                                              sum(weight_vec .* S_t[nz_buffer] .* loadings_k_nz .^ 2)
+
+                        err[m, t] -= factor_correction_k
+                    end
+                end
+
                 # Calculate weightsum
                 sum_weight = sum(weight_vec)
                 diag_ws = weight_vec .* S_t[nz_buffer]
@@ -245,7 +286,7 @@ end
 # ----------------------------------------------------------------------
 #  SECOND PASS  – deduct excluded pairs from err and weightsum
 # ----------------------------------------------------------------------
-function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
+function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings_matrix=Matrix{eltype(err)}(undef, 0, 0), n_pcs=0)
     Nmom = size(err, 1)
     T = obs_index.T
 
@@ -275,8 +316,17 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
                         continue
                     end
 
-                    # Deduct contribution for excluded pairs
-                    err[imom, t] -= u[idx_i] * u[idx_j] * weight_i * S[idx_j]
+                    # Compute empirical covariance
+                    empirical_cov = u[idx_i] * u[idx_j]
+
+                    # Compute expected covariance from factors if n_pcs > 0
+                    expected_cov = zero(eltype(empirical_cov))
+                    if n_pcs > 0
+                        expected_cov = dot(loadings_matrix[i, :], loadings_matrix[j, :])
+                    end
+
+                    # Deduct contribution for excluded pairs (accounting for factor structure)
+                    err[imom, t] -= (empirical_cov - expected_cov) * weight_i * S[idx_j]
                     weightsum[imom, t] -= weight_i * S[idx_j]
                 end
             end
@@ -300,8 +350,17 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
                         continue
                     end
 
-                    # Deduct contribution for excluded pairs
-                    err[imom, t] -= u[idx_i] * u[idx_j] * weight_j * S[idx_i]
+                    # Compute empirical covariance
+                    empirical_cov = u[idx_i] * u[idx_j]
+
+                    # Compute expected covariance from factors if n_pcs > 0
+                    expected_cov = zero(eltype(empirical_cov))
+                    if n_pcs > 0
+                        expected_cov = dot(loadings_matrix[i, :], loadings_matrix[j, :])
+                    end
+
+                    # Deduct contribution for excluded pairs (accounting for factor structure)
+                    err[imom, t] -= (empirical_cov - expected_cov) * weight_j * S[idx_i]
                     weightsum[imom, t] -= weight_j * S[idx_i]
                 end
             end
@@ -312,7 +371,11 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index)
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols})
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000))
+    if n_pcs > 0
+        throw(ArgumentError("PC extraction (n_pcs > 0) is not yet supported for the :debiased_ols algorithm. Use :iv_twopass instead."))
+    end
+
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -366,7 +429,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     return err
 end
 
-mean_moment_conditions(ζ, args...) = vec(mean(moment_conditions(ζ, args...); dims=2))
+
+mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000)) = 
+    vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option); dims=2))
 
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Nmom = length(ζ)
