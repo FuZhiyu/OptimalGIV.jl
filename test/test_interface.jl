@@ -1,5 +1,6 @@
-using Test, OptimalGIV, DataFrames, CategoricalArrays
-using OptimalGIV: preprocess_dataframe, get_coefnames, parse_guess
+using Test, OptimalGIV, DataFrames, CategoricalArrays, StatsModels
+using OptimalGIV: preprocess_dataframe, get_coefnames, parse_guess, PCTerm, has_pc, get_pc_k, remove_pc_terms, separate_giv_ols_fe_formulas
+using StatsModels: term, ConstantTerm, InterceptTerm
 df = DataFrame(
     id=categorical(repeat(1:10, outer=50)),
     t=repeat(1:50, inner=10),
