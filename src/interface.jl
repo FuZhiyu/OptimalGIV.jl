@@ -69,7 +69,7 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
     - `:residuals`: Save residuals in the returned model
     - `:fe`: Save fixed effects estimates
     - `:all`: Save both residuals and fixed effects
-- `save_df::Bool = false`: If `true`, the pre-processed estimation DataFrame (including residuals, fixed-effects, and coefficient columns when requested) is stored in the returned model under `df`. This can be useful for post-estimation analysis but increases memory usage.
+- `save_df::Bool = false`: If `true`, the processed estimation DataFrame (including residuals, fixed-effects, and coefficient columns when requested) is stored in the returned model under `df`. This can be useful for post-estimation analysis but increases memory usage.
 - `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
     If `nothing` (default), automatically detected by checking the market clearing condition. 
     Can be manually set to `true` or `false` for debugging purposes.
@@ -190,7 +190,7 @@ function giv(
         σu²vec, Σζ, Σβ = NaN * zeros(N), NaN * zeros(Nζ, Nζ), NaN * zeros(Nβ, Nβ)
     end
     coef = [ζ̂; β]
-    coefdf = create_coef_dataframe(df, formula_schema, coef, id)
+    coefdf = create_coef_dataframe(df, formula_schema, coef, id; fekeys=fekeys)
     if (save == :all || save == :fe) && length(feids) > 0
         fedf = select(df, fekeys)
         fedf = retrieve_fixedeffects!(fedf, Y_original * [one(eltype(ζ̂)); ζ̂] - X_original * β, feM, feids)
@@ -212,7 +212,7 @@ function giv(
     if n_pcs > 0
         pc_factors, _, pc_model, û = extract_pcs_from_residuals(û, obs_index, n_pcs; pca_option...)
         # !the saved û is the residuals after the PCs
-        pc_loadings = projection(pc_model) # important: save the projection so that projection x factors = predicted values
+        pc_loadings = projection(pc_model) # important: save the projection so that projection x factors = predicted values; loading(pc_model) will include the factor vol as well. 
     end
 
     dof = length(ζ̂) + length(β)
@@ -230,7 +230,20 @@ function giv(
         if !isnothing(resdf)
             savedf[!, Symbol(response_name, "_residual")] = û
         end
-        savedf = leftjoin(savedf, coefdf, on=intersect(names(savedf), names(coefdf)))
+        # Join coefficient DataFrame with main DataFrame
+        common_cols = intersect(names(savedf), names(coefdf))
+        if !isempty(common_cols)
+            # Normal case: join on categorical variables
+            savedf = leftjoin(savedf, coefdf, on=common_cols)
+        elseif nrow(coefdf) == 1
+            # No categorical variables: broadcast single row of coefficients to all rows
+            # This happens when all terms are continuous variables
+            savedf = crossjoin(savedf, coefdf)
+        else
+            # This should never happen - multiple rows but no common columns
+            throw(ArgumentError("Coefficient DataFrame has multiple rows but no columns in common with data. This indicates a bug in create_coef_dataframe."))
+        end
+
         if !isnothing(fedf)
             savedf = leftjoin(savedf, fedf, on=intersect(names(savedf), names(fedf)))
         end
@@ -242,8 +255,11 @@ function giv(
 
     # If saving dataframe and PC factors were extracted, add them to savedf
     if save_df && n_pcs > 0 && !isnothing(pc_factors)
+
         # Add PC factors to savedf (factors are k×T, so we need pc_factors[k, :])
-        time_pc_df = DataFrame(t => unique(df[!, t]))
+        # IMPORTANT: Use sorted time order to match ObservationIndex ordering
+        # ObservationIndex sorts time periods, so pc_factors columns correspond to sorted times
+        time_pc_df = DataFrame(t => sort(unique(df[!, t])))
         for k in 1:n_pcs
             time_pc_df[!, Symbol("pc_factor_", k)] = pc_factors[k, :]
         end
@@ -251,7 +267,10 @@ function giv(
 
         # Add PC loadings to savedf (loadings are by entity)
         if !isnothing(pc_loadings)
-            entity_loading_df = DataFrame(id => unique(df[!, id]))
+            # CRITICAL: Use sorted entity order to match ObservationIndex ordering
+            # ObservationIndex uses natural sort order for entities (line 66 of observation_index.jl)
+            # This ensures PC loadings are correctly aligned with entity indices
+            entity_loading_df = DataFrame(id => sort(unique(df[!, id])))
             for k in 1:n_pcs
                 entity_loading_df[!, Symbol("pc_loading_", k)] = pc_loadings[:, k]
             end
@@ -399,7 +418,7 @@ function extract_raw_matrices(df, formula, id, t, weight; contrasts=Dict{Symbol,
     return q, Cp, C, S, X_original, obs_index
 end
 
-function create_coef_dataframe(df, formula_schema, coef, id)
+function create_coef_dataframe(df, formula_schema, coef, id; fekeys=[])
     slope_terms = eachterm(formula_schema.lhs[2:end])
     exog_terms = eachterm(formula_schema.rhs.terms)
     terms = [slope_terms..., exog_terms...]
@@ -407,12 +426,15 @@ function create_coef_dataframe(df, formula_schema, coef, id)
     cat_symbol(t::CategoricalTerm) = [Symbol(t)]
     cat_symbol(t::InteractionTerm) = [Symbol(x) for x in t.terms if x isa CategoricalTerm]
     categorical_terms_symbol = [cat_symbol(t) for t in terms if has_categorical(t)]
-    categorical_terms_symbol = unique(vcat(categorical_terms_symbol...))
-    if categorical_terms_symbol == []
-        categorical_terms_symbol = [id]
+    categorical_terms_symbol = unique(vcat(categorical_terms_symbol..., fekeys))
+    if length(categorical_terms_symbol) == 0 
+        # No categorical terms: create single-row DataFrame for coefficients
+        # Use a temporary placeholder column that will be removed later
+        categories = DataFrame(:_placeholder_ => [1])
+    else
+        categories = select(df, categorical_terms_symbol) |> unique
     end
 
-    categories = select(df, categorical_terms_symbol) |> unique
     i = 1
     for term in terms
         termsym = Symbol(term)
@@ -425,8 +447,7 @@ function create_coef_dataframe(df, formula_schema, coef, id)
             catmat = modelcols(term, categories)
             Nlevels = size(catmat)[2]
             termcoef = coef[i:i+Nlevels-1]
-            termmat = modelcols(term, categories)
-            categories[!, coefsym] = termmat * termcoef
+            categories[!, coefsym] = catmat * termcoef
             i += Nlevels
         elseif term isa InterceptTerm{false}
             continue
@@ -437,6 +458,10 @@ function create_coef_dataframe(df, formula_schema, coef, id)
     end
     if i != length(coef) + 1
         throw(ArgumentError("Number of coefficients does not match the number of terms. You may be using different formula or dataframe for estimation and creating coef dataframe."))
+    end
+    if length(categorical_terms_symbol) == 0
+        # Remove the placeholder column, leaving only coefficient columns
+        select!(categories, Not(:_placeholder_))
     end
 
     return categories
