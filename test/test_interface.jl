@@ -1,6 +1,6 @@
-using Test, OptimalGIV, DataFrames, CategoricalArrays, StatsModels
-using OptimalGIV: preprocess_dataframe, get_coefnames, parse_guess, PCTerm, has_pc, get_pc_k, remove_pc_terms, separate_giv_ols_fe_formulas
-using StatsModels: term, ConstantTerm, InterceptTerm
+using Test, OptimalGIV, DataFrames, CategoricalArrays, StatsModels, Random
+using OptimalGIV: preprocess_dataframe, get_coefnames, parse_guess, PCTerm, has_pc, get_pc_k, remove_pc_terms, separate_giv_ols_fe_formulas, create_coef_dataframe
+using StatsModels: term, ConstantTerm, InterceptTerm, CategoricalTerm, InteractionTerm
 df = DataFrame(
     id=categorical(repeat(1:10, outer=50)),
     t=repeat(1:50, inner=10),
@@ -308,5 +308,567 @@ end
         result_complex = separate_giv_ols_fe_formulas(df, formula_complex)
         @test length(result_complex) == 6
         @test result_complex[6] == 2  # n_pcs should be 2
+    end
+end
+
+##============= test PC ordering =============##
+@testset "PC Ordering Tests" begin
+    
+    @testset "PC loadings match entity ordering" begin
+        # Create a simple balanced panel with known structure
+        Random.seed!(123)
+        
+        # Create data where entities appear in non-sorted order
+        df = DataFrame(
+            id = categorical(repeat([3, 1, 4, 2], 5)),  # Non-sorted entity order
+            t = repeat(1:5, inner=4),
+            q = randn(20),
+            p = randn(20),
+            S = ones(20)
+        )
+        
+        # Add simple covariates
+        df.x = randn(20)
+        
+        # Test with pc(1) - simpler case
+        model = giv(df, @formula(q + id & endog(p) ~ fe(id) + x + pc(1)), 
+                    :id, :t, :S; 
+                    algorithm = :iv,
+                    guess = [1.0, 1.5, 2.0, 2.5],  # 4 entities
+                    save_df = true,
+                    quiet = true,  # Suppress convergence warnings
+                    iterations = 1)  # Only one iteration since we're just testing structure
+        
+        # Verify the saved dataframe exists
+        @test !isnothing(model.df)
+        @test "pc_loading_1" in names(model.df)
+        @test "pc_factor_1" in names(model.df)
+        
+        # Check that each entity has consistent loading across time
+        for entity_id in unique(df.id)
+            entity_rows = model.df[model.df.id .== entity_id, :]
+            loadings = entity_rows.pc_loading_1
+            # All loadings for the same entity should be identical
+            @test all(loadings .≈ loadings[1])
+        end
+        
+        # Check that each time period has consistent factor across entities
+        for time_period in unique(df.t)
+            time_rows = model.df[model.df.t .== time_period, :]
+            factors = time_rows.pc_factor_1
+            # All factors for the same time should be identical
+            @test all(factors .≈ factors[1])
+        end
+        
+        # Verify we have the correct number of unique loadings and factors
+        unique_loadings = unique(round.(model.df.pc_loading_1, digits=10))
+        unique_factors = unique(round.(model.df.pc_factor_1, digits=10))
+        @test length(unique_loadings) == 4  # 4 entities
+        @test length(unique_factors) == 5   # 5 time periods
+    end
+    
+    @testset "PC ordering with very unbalanced panel" begin
+        # Create unbalanced panel where different entities appear at different times
+        df = DataFrame()
+        
+        # Entity 5 appears only in periods 1-2
+        append!(df, DataFrame(id = categorical(fill(5, 2)), t = [1, 2], 
+                            q = randn(2), p = randn(2), S = ones(2), x = randn(2)))
+        
+        # Entity 1 appears in all periods 1-3
+        append!(df, DataFrame(id = categorical(fill(1, 3)), t = [1, 2, 3], 
+                            q = randn(3), p = randn(3), S = ones(3), x = randn(3)))
+        
+        # Entity 3 appears only in period 2-3
+        append!(df, DataFrame(id = categorical(fill(3, 2)), t = [2, 3], 
+                            q = randn(2), p = randn(2), S = ones(2), x = randn(2)))
+        
+        # Entity 2 appears in all periods
+        append!(df, DataFrame(id = categorical(fill(2, 3)), t = [1, 2, 3], 
+                            q = randn(3), p = randn(3), S = ones(3), x = randn(3)))
+        
+        # Entities appear in order: 5, 1, 3, 2 (not sorted)
+        # But ObservationIndex should use sorted order: 1, 2, 3, 5
+        
+        model = giv(df, @formula(q + id & endog(p) ~ fe(id) + x + pc(1)), 
+                    :id, :t, :S; 
+                    algorithm = :iv,
+                    guess = [1.0, 1.5, 2.0, 2.5],  # 4 entities
+                    save_df = true,
+                    quiet = true,  # Suppress convergence warnings
+                    iterations = 1)  # Only one iteration since we're just testing structure
+        
+        # Verify loadings are consistent for each entity
+        @test !isnothing(model.df)
+        for entity_id in unique(df.id)
+            entity_rows = model.df[model.df.id .== entity_id, :]
+            if nrow(entity_rows) > 0
+                loadings = entity_rows.pc_loading_1
+                @test all(loadings .≈ loadings[1])
+            end
+        end
+        
+        # The key test: verify that the number of unique PC loadings matches number of entities
+        unique_loadings = unique(round.(model.df.pc_loading_1, digits=10))
+        @test length(unique_loadings) == 4  # Should be 4 distinct loadings for 4 entities
+    end
+end
+
+##============= test create_coef_dataframe =============##
+@testset "create_coef_dataframe comprehensive tests" begin
+    
+    @testset "Basic functionality" begin
+        # Create test data
+        df = DataFrame(
+            id = categorical(repeat(1:3, outer=2)),
+            t = repeat(1:2, inner=3),
+            group = categorical(repeat(["A", "B", "A"], 2)),
+            q = randn(6),
+            p = randn(6),
+            x1 = randn(6),
+            x2 = randn(6)
+        )
+        
+        # Test 1: No categorical terms (single row output)
+        formula = @formula(q + endog(p) ~ x1 + x2)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        coef = [0.5, 1.0, 2.0, 3.0]  # p_coef, intercept, x1_coef, x2_coef
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 1
+        # Intercept is added to coefficient columns
+        @test ncol(coefdf) == 4  # p_coef, (Intercept)_coef, x1_coef, x2_coef
+        @test coefdf.p_coef[1] ≈ 0.5
+        @test coefdf.x1_coef[1] ≈ 2.0
+        @test coefdf.x2_coef[1] ≈ 3.0
+        
+        # Test 2: Single categorical term
+        formula = @formula(q + id & endog(p) ~ x1)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        coef = [1.0, 1.5, 2.0, 0.5, 3.0]  # 3 id coeffs, intercept, x1
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 3
+        @test "id" in names(coefdf)
+        @test "id & p_coef" in names(coefdf)
+        @test "x1_coef" in names(coefdf)
+        @test all(coefdf.x1_coef .≈ 3.0)
+    end
+    
+    @testset "InterceptTerm handling" begin
+        df = DataFrame(
+            id = categorical([1, 2, 3]),
+            q = [1.0, 2.0, 3.0],
+            p = [0.5, 1.0, 1.5],
+            x = [0.1, 0.2, 0.3]
+        )
+        
+        # Test with no intercept (InterceptTerm{false})
+        formula = @formula(q + endog(p) ~ 0 + x)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        coef = [0.5, 2.0]  # p_coef, x_coef (no intercept)
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 1
+        @test ncol(coefdf) == 2  # Only p_coef and x_coef
+        @test !("(Intercept)_coef" in names(coefdf))
+        @test coefdf.p_coef[1] ≈ 0.5
+        @test coefdf.x_coef[1] ≈ 2.0
+    end
+    
+    @testset "Complex interactions" begin
+        df = DataFrame(
+            id = categorical(repeat(1:2, outer=6)),
+            group = categorical(repeat(["A", "B"], inner=2, outer=3)),
+            region = categorical(repeat(["X", "Y", "Z"], inner=4)),
+            t = repeat(1:3, inner=4),
+            q = randn(12),
+            p = randn(12),
+            x = randn(12)
+        )
+        
+        # Test 1: Multiple categorical interactions with endog
+        formula = @formula(q + id & group & endog(p) ~ x)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        # 4 unique combinations of id × group
+        # Note: the actual number of coefficients depends on the dummy coding scheme
+        # With FullDummyCoding, id (2 levels) × group (2 levels) = 4 coefficients
+        coef = [1.0, 1.5, 2.0, 2.5, 0.5, 3.0]  # 4 interaction coeffs, intercept, x
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 4  # 2 ids × 2 groups
+        @test "id" in names(coefdf)
+        @test "group" in names(coefdf)
+        @test "id & group & p_coef" in names(coefdf)
+        
+        # Test 2: Three-way categorical interaction
+        formula = @formula(q + id & group & region & endog(p) ~ x)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        # Should have 2×2×3 = 12 unique combinations
+        coef = collect(1.0:12.0)  # 12 interaction coeffs
+        append!(coef, [0.5, 3.0])  # intercept, x
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 12
+        @test all(["id", "group", "region"] .∈ Ref(names(coefdf)))
+        @test "id & group & region & p_coef" in names(coefdf)
+    end
+    
+    @testset "Mixed categorical and continuous interactions" begin
+        df = DataFrame(
+            id = categorical(repeat(1:3, outer=2)),
+            t = repeat(1:2, inner=3),
+            q = randn(6),
+            p = randn(6),
+            x1 = randn(6),
+            x2 = randn(6)
+        )
+        
+        # Interaction of categorical with continuous should have one coef per entity
+        formula = @formula(q + id & x1 & endog(p) ~ x2)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        # 3 coefficients for 3 entities (each scaled by x1)
+        coef = [1.0, 1.5, 2.0, 0.5, 3.0]  # 3 id coeffs, intercept, x2
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 3  # One per id
+        @test "id" in names(coefdf)
+        @test "id & x1 & p_coef" in names(coefdf)  # Full interaction name preserved
+        @test "x2_coef" in names(coefdf)
+        @test all(coefdf.x2_coef .≈ 3.0)
+    end
+    
+    @testset "Coefficient count validation" begin
+        df = DataFrame(
+            id = categorical([1, 2, 3]),
+            q = [1.0, 2.0, 3.0],
+            p = [0.5, 1.0, 1.5],
+            x = [0.1, 0.2, 0.3]
+        )
+        
+        formula = @formula(q + id & endog(p) ~ x)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        # Verify expected coefficient count
+        endog_terms = coefnames(formula_schema.lhs)[2:end]  # Skip response variable
+        exog_terms = coefnames(formula_schema.rhs)
+        expected_count = length(endog_terms) + length(exog_terms)
+        
+        # Test too few coefficients - will throw BoundsError due to array access
+        coef_short = ones(expected_count - 1)
+        @test_throws BoundsError create_coef_dataframe(df, formula_schema, coef_short, :id)
+        
+        # Test too many coefficients  
+        coef_long = ones(expected_count + 1)
+        @test_throws ArgumentError create_coef_dataframe(df, formula_schema, coef_long, :id)
+        
+        # Test correct number
+        coef_correct = ones(expected_count)
+        coefdf = create_coef_dataframe(df, formula_schema, coef_correct, :id)
+        @test nrow(coefdf) == 3  # Should work without error
+    end
+    
+    @testset "Empty and edge case formulas" begin
+        df = DataFrame(
+            id = categorical([1, 2]),
+            q = [1.0, 2.0],
+            p = [0.5, 1.0]
+        )
+        
+        # Test with only endogenous term, no exogenous
+        formula = @formula(q + endog(p) ~ 0)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        coef = [0.5]  # Just p_coef
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 1
+        @test ncol(coefdf) == 1
+        @test "p_coef" in names(coefdf)
+    end
+    
+    @testset "Fixed effects integration (fekeys)" begin
+        df = DataFrame(
+            id = categorical(repeat(1:3, outer=4)),
+            t = categorical(repeat(1:4, inner=3)),
+            group = categorical(repeat(["A", "B", "A"], 4)),
+            q = randn(12),
+            p = randn(12),
+            x = randn(12)
+        )
+        
+        # Simulate formula with fixed effects
+        formula = @formula(q + group & endog(p) ~ x + fe(id) + fe(t))
+        _, formula_schema, _, _, fekeys, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        # fekeys should contain [:id, :t]
+        @test :id in fekeys
+        @test :t in fekeys
+        
+        # group has 2 unique values (A, B)
+        # With default dummy coding, only B gets a coefficient
+        coef = [1.0, 0.5, 2.0]  # 1 group coeff (B), intercept, x
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id; fekeys=fekeys)
+        
+        # Should include fe keys in categorical_terms_symbol
+        @test "id" in names(coefdf)
+        @test "t" in names(coefdf)
+        @test "group" in names(coefdf)
+        
+        # Should have unique combinations of all categorical variables including FEs
+        expected_rows = nrow(unique(select(df, :id, :t, :group)))
+        @test nrow(coefdf) == expected_rows
+    end
+    
+    @testset "Column naming edge cases" begin
+        # Test with variable names that could create conflicts
+        df = DataFrame(
+            id = categorical([1, 2]),
+            coef = [1.0, 2.0],  # Variable named "coef"
+            q = [1.0, 2.0],
+            p = [0.5, 1.0]
+        )
+        
+        formula = @formula(q + id & endog(p) ~ coef)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        coef_vec = [1.0, 1.5, 0.5, 3.0]  # 2 id coeffs, intercept, coef
+        coefdf = create_coef_dataframe(df, formula_schema, coef_vec, :id)
+        
+        # Should create names like "id & p_coef" and "coef_coef"
+        @test "id & p_coef" in names(coefdf)
+        @test "coef_coef" in names(coefdf)  # The variable "coef" gets "_coef" suffix
+    end
+    
+    @testset "Large categorical variables" begin
+        # Test with many levels
+        n_entities = 50
+        n_groups = 10
+        n_obs = n_entities * 2
+        
+        df = DataFrame(
+            id = categorical(repeat(1:n_entities, 2)),
+            group = categorical(repeat(1:n_groups, inner=div(n_obs, n_groups))),
+            q = randn(n_obs),
+            p = randn(n_obs),
+            x = randn(n_obs)
+        )
+        
+        formula = @formula(q + id & endog(p) ~ x)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        # Create coefficients for all entities
+        coef = vcat(randn(n_entities), [0.5, 3.0])  # n_entities + intercept + x
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == n_entities
+        @test all(1:n_entities .== sort(coefdf.id))
+    end
+    
+    @testset "Continuous-only interactions" begin
+        df = DataFrame(
+            id = categorical([1, 2, 3]),
+            q = [1.0, 2.0, 3.0],
+            p = [0.5, 1.0, 1.5],
+            x1 = [0.1, 0.2, 0.3],
+            x2 = [0.2, 0.4, 0.6]
+        )
+        
+        # Interaction of continuous variables only
+        formula = @formula(q + x1 & endog(p) ~ x2)
+        _, formula_schema, _, _, _, _ = separate_giv_ols_fe_formulas(df, formula)
+        
+        coef = [0.5, 1.0, 2.0]  # x1&p_coef, intercept, x2_coef
+        coefdf = create_coef_dataframe(df, formula_schema, coef, :id)
+        
+        @test nrow(coefdf) == 1  # No categorical terms
+        @test "x1 & p_coef" in names(coefdf)
+        @test coefdf[1, "x1 & p_coef"] ≈ 0.5
+    end
+end
+
+##============= test save logic =============##
+@testset "Save Logic Tests" begin
+    # Create a base test dataset
+    Random.seed!(123)
+    df_base = DataFrame(
+        id = categorical(repeat(1:4, outer=3)),
+        t = repeat(1:3, inner=4),
+        group = categorical(repeat(["A", "B"], inner=2, outer=3)),
+        S = repeat([0.25, 0.25, 0.25, 0.25], 3),
+        q = randn(12),
+        p = repeat(randn(3), inner=4),
+        x1 = randn(12),
+        x2 = randn(12)
+    )
+    
+    @testset "save=:fe tests" begin
+        # Test with single fixed effect
+        formula_fe = @formula(q + id & endog(p) ~ x1 + fe(t))
+        model_fe = giv(df_base, formula_fe, :id, :t, :S; 
+                       algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
+                       save=:fe, quiet=true)
+        
+        @test !isnothing(model_fe.fe)
+        @test "t" in names(model_fe.fe)
+        @test nrow(model_fe.fe) == 3  # 3 unique time periods
+        
+        # Fixed effects should be in coefdf when save=:fe
+        @test "t" in names(model_fe.coefdf)
+        
+        # Test with multiple fixed effects
+        # Create data where p varies by entity and time to avoid collinearity
+        df_multi_fe = DataFrame(df_base)
+        df_multi_fe.p = randn(nrow(df_multi_fe))  # Make p vary across all observations
+        formula_multi_fe = @formula(q + endog(p) ~ x1 + fe(id) + fe(t))
+        model_multi_fe = giv(df_multi_fe, formula_multi_fe, :id, :t, :S; 
+                            algorithm=:iv, guess=0.5, 
+                            save=:fe, quiet=true)
+        
+        @test !isnothing(model_multi_fe.fe)
+        @test "id" in names(model_multi_fe.fe)
+        @test "t" in names(model_multi_fe.fe)
+        
+        # Test with no fixed effects but save=:fe
+        formula_no_fe = @formula(q + endog(p) ~ x1 + x2)
+        model_no_fe = giv(df_base, formula_no_fe, :id, :t, :S; 
+                         algorithm=:iv, guess=0.5, 
+                         save=:fe, quiet=true)
+        
+        @test isnothing(model_no_fe.fe)  # No fixed effects to save
+    end
+    
+    @testset "save=:residuals tests" begin
+        formula = @formula(q + id & endog(p) ~ x1 + fe(t))
+        model_res = giv(df_base, formula, :id, :t, :S; 
+                       algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
+                       save=:residuals, quiet=true)
+        
+        @test !isnothing(model_res.residual_df)
+        @test nrow(model_res.residual_df) == nrow(df_base)
+        @test "id" in names(model_res.residual_df)
+        @test "t" in names(model_res.residual_df)
+        @test "q_residual" in names(model_res.residual_df)
+        
+        # Check residuals are finite
+        @test all(isfinite.(model_res.residual_df.q_residual))
+    end
+    
+    @testset "save=:all tests" begin
+        formula = @formula(q + id & endog(p) ~ x1 + fe(t))
+        model_all = giv(df_base, formula, :id, :t, :S; 
+                       algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
+                       save=:all, quiet=true)
+        
+        # Should have both residuals and fixed effects
+        @test !isnothing(model_all.residual_df)
+        @test !isnothing(model_all.fe)
+        @test "q_residual" in names(model_all.residual_df)
+        @test "t" in names(model_all.fe)
+        
+        # Fixed effects should be in coefdf
+        @test "t" in names(model_all.coefdf)
+    end
+    
+    @testset "save_df=true tests" begin
+        # Test 1: Basic save_df with categorical elasticities
+        formula = @formula(q + id & endog(p) ~ x1 + fe(t))
+        model_savedf = giv(df_base, formula, :id, :t, :S; 
+                          algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
+                          save_df=true, save=:all, quiet=true)
+        
+        @test !isnothing(model_savedf.df)
+        @test nrow(model_savedf.df) == nrow(df_base)
+        @test "q_residual" in names(model_savedf.df)
+        @test "id & p_coef" in names(model_savedf.df)
+        @test "fe_t" in names(model_savedf.df)  # Fixed effect column
+        
+        # Test 2: save_df with no categorical terms (crossjoin case)
+        formula_no_cat = @formula(q + endog(p) ~ x1 + x2)
+        model_no_cat = giv(df_base, formula_no_cat, :id, :t, :S; 
+                          algorithm=:iv, guess=0.5, 
+                          save_df=true, quiet=true)
+        
+        @test !isnothing(model_no_cat.df)
+        @test nrow(model_no_cat.df) == nrow(df_base)
+        @test "p_coef" in names(model_no_cat.df)
+        @test all(model_no_cat.df.p_coef .== model_no_cat.df.p_coef[1])  # All same value
+        
+        # Test 3: save_df with PC terms
+        formula_pc = @formula(q + id & endog(p) ~ x1 + pc(2))
+        model_pc = giv(df_base, formula_pc, :id, :t, :S; 
+                      algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
+                      save_df=true, quiet=true)
+        
+        @test !isnothing(model_pc.df)
+        @test "pc_factor_1" in names(model_pc.df)
+        @test "pc_factor_2" in names(model_pc.df)
+        @test "pc_loading_1" in names(model_pc.df)
+        @test "pc_loading_2" in names(model_pc.df)
+    end
+    
+    @testset "Edge case: FE and coefficient categories don't overlap" begin
+        # Create data where group is used for coefficients and id for fixed effects
+        df_edge = DataFrame(
+            id = categorical(repeat(1:3, outer=4)),
+            t = repeat(1:4, inner=3),
+            group = categorical(repeat(["X", "Y", "Z"], 4)),
+            S = repeat([0.33, 0.33, 0.34], 4),
+            q = randn(12),
+            p = repeat(randn(4), inner=3),
+            x = randn(12)
+        )
+        
+        # Use group for elasticities but id for fixed effects
+        formula_edge = @formula(q + group & endog(p) ~ x + fe(id))
+        model_edge = giv(df_edge, formula_edge, :id, :t, :S; 
+                        algorithm=:iv, guess=[1.0, 1.5, 2.0], 
+                        save=:fe, save_df=true, quiet=true)
+        
+        # Check that both group coefficients and id fixed effects are present
+        @test "group" in names(model_edge.coefdf)
+        @test "id" in names(model_edge.coefdf)  # Added via fedf join
+        @test !isnothing(model_edge.fe)
+        @test nrow(model_edge.fe) == 3  # 3 unique ids
+        
+        # In savedf, should have both
+        @test "group" in names(model_edge.df)
+        @test "id" in names(model_edge.df)
+        @test "group & p_coef" in names(model_edge.df)
+        
+        # Test another edge case: no overlap at all between formula variables
+        # Create data where p varies to avoid collinearity with fixed effects
+        df_edge2 = DataFrame(df_edge)
+        df_edge2.p = randn(nrow(df_edge2))
+        formula_edge2 = @formula(q + endog(p) ~ x + fe(id) + fe(t))
+        model_edge2 = giv(df_edge2, formula_edge2, :id, :t, :S; 
+                         algorithm=:iv, guess=0.5, 
+                         save=:all, save_df=true, quiet=true)
+        
+        # coefdf should have no categorical columns initially (crossjoin case)
+        # but after FE merge, should have id and t
+        @test "id" in names(model_edge2.coefdf)
+        @test "t" in names(model_edge2.coefdf)
+        @test "p_coef" in names(model_edge2.df)
+        @test "q_residual" in names(model_edge2.df)
+    end
+    
+    @testset "save=:none tests" begin
+        formula = @formula(q + id & endog(p) ~ x1 + fe(t))
+        model_none = giv(df_base, formula, :id, :t, :S; 
+                        algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
+                        save=:none, save_df=false, quiet=true)
+        
+        # Should have minimal saved data
+        @test isnothing(model_none.residual_df)
+        @test isnothing(model_none.fe)
+        @test isnothing(model_none.df)
+        @test !isnothing(model_none.coefdf)  # Always created
     end
 end
