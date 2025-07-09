@@ -117,6 +117,9 @@ function SimModel(; kwargs...)
         # cholL = cholesky(cov(η')).L
         # η = inv(cholL) * η
         Λ = rand(N, K)
+    else
+        Λ = rand(N, 0)
+        η = rand(0, T)
     end
 
     if K > 0
