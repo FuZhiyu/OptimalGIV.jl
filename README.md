@@ -8,7 +8,9 @@
 
 Estimate models using granular instrument variables (GIV), with optimal weighting schemes. 
 
-**Working in progress**: The core algorithms are thoroughly tested using simulations, but documentations are incomplete and bugs may exists for minor features. Feature requests and bug reports are welcomed. 
+The core algorithms are thoroughly tested using simulations, but documentations are under development and bugs may exists for minor features. Feature requests and bug reports are welcomed. For the details of the algorithm implementation, please refer to the source code and [the companion paper](https://fuzhiyu.me/TreasuryGIVPaper/Treasury_GIV_draft.pdf).
+
+For Python users, a Python wrapper can be found [here](https://github.com/FuZhiyu/optimalgiv).
 
 ### Model Specification
 
@@ -26,11 +28,9 @@ q_{i,t} & =-p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{\zeta}+\mathbf{X}_{i,t}'\bol
 
 where $q_{i,t}$ and $p_{t}$ are endogenous, $S$ is the weighting variable $X_S$ indicates $S$ weighted summation. 
 
-The model is estimated with the following moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$. See references below for details.
+The model is estimated with the following moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$. See referenced for details.
 
 Unbalanced panel is allowed. However, certain algorithms only work with complete coverage ($\sum_{i}S_{i,t}q_{i,t} = 0$ holds in-sample). Cares need to be taken when interpreting the results without complete coverage. 
-
-Internal PC extractions are supported. With internal PCs, the moment conditions become $\mathbb E[u_{i,t}u_{j,t}] = \Lambda \Lambda'$, where $\Lambda$ is the factor loadings estimated internally using [HeteroPCA.jl](https://github.com/FuZhiyu/HeteroPCA.jl) from $u_{i,t}(z) \equiv q_{i,t} + p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{z}$ at each guess of $z$. However, with small samples, the exactly root solving the moment condition may not exist, and users may want to use an minimizer to minimize the error instead. Also, be noted that a model with fully flexible elasticity specification and fully flexible factor loadings is not theoretically identifiable. 
 
 
 ## Installation
@@ -97,7 +97,7 @@ The formula interface generally follows the [`StatsModel.jl`](https://github.com
 @formula(q + endog(p) ~ id & η + fe(id))
 
 # Heterogeneous elasticity by entity
-@formula(q + id & endog(p) ~ η + fe(id))
+@formula(q + id & endog(p) ~ id & η + fe(id))
 
 # Multiple interactions
 @formula(q + id & endog(p) + category & endog(p) ~ fe(id) & η1 + η2)
@@ -247,6 +247,16 @@ Efficient algorithm when the aggregate elasticity is constant across time. Searc
 - Constant weights across time
 - Complete market coverage
 - PC extraction: Not supported with this algorithm
+
+## Internal PCA
+
+Internal PC extractions are supported. With internal PCs, the moment conditions become $\mathbb E[u_{i,t}u_{j,t}] = \Lambda \Lambda'$, where $\Lambda$ is the factor loadings estimated internally using [HeteroPCA.jl](https://github.com/FuZhiyu/HeteroPCA.jl) from $u_{i,t}(z) \equiv q_{i,t} + p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{z}$ at each guess of $z$. However, following caveats apply:
+
+- With internal PC extraction, the weighting scheme is no longer optimal as it does not consider the covariance in the moment conditions due to common factor estimation. The standard error formula also no longer applies and hence was not returned. One can consider bootstrapping for statistical inference; 
+
+- In small samples, the exactly root solving the moment condition may not exist, and users may want to use an minimizer to minimize the error instead. 
+
+- A model with fully flexible elasticity specification and fully flexible internal factor loadings is not theoretically identifiable. Hence, one needs to assume certain level of homogeneity to estimate factors internally. 
 
 ## Initial Guesses
 
