@@ -2,3 +2,7 @@
 .vscode
 .DS_Store
 simulations/
+# Scratch folder for temporary work and results
+scratch/
+# Archive of experiments - results not tracked in git
+archive_experiments/
