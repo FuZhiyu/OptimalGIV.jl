@@ -77,8 +77,21 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 - `contrasts::Dict{Symbol,Any} = Dict()`: Contrasts specification for categorical variables (following StatsModels.jl conventions). Untested. Use with caution.
 - `tol::Float64 = 1e-6`: Convergence tolerance for the solver and fixed effects.
 - `iterations::Int = 100`: Maximum number of iterations for the solver.
-- `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
+- `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl.
     Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
+- `precision_mode::Symbol = :cue`: Entity precision-weighting scheme.
+    - `:cue` (default): continuously-updated GMM weights `1/σᵢ²(ζ)`, recomputed each
+      solver evaluation (byte-identical to previous behavior).
+    - `:proxy`: fixed data-based precisions `1/var(uqᵢ)` from the FE/control-residualized
+      flows, computed once before solving. Under incomplete coverage this makes the moment
+      map an exact fixed quadratic in ζ, removing the CUE self-weighting instability.
+    - `:fixed`: user-supplied `precision_weights`. Enables a two-step estimator
+      (solve with `:proxy`, then re-solve once with precisions from the first-step residuals).
+- `precision_weights::Union{Nothing,AbstractVector} = nothing`: precision vector (length `N`,
+    sorted entity order) used when `precision_mode = :fixed`.
+- `method::Symbol = :trust_region`, `autodiff::Symbol = :central`: passed through to
+    NLsolve.jl. `autodiff = :forward` uses ForwardDiff for the Jacobian (the moment code is
+    generic in `eltype(ζ)`). Defaults are NLsolve's own defaults, so default behavior is unchanged.
 - `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
     Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
@@ -98,6 +111,35 @@ The output is `m::GIVModel`. Several important fields are:
 """
 
 
+"""
+    resolve_precision(precision_mode, precision_weights, uq, obs_index)
+
+Resolve the entity precision-weight vector for the fixed-weight estimation modes.
+
+- `:cue`  → `nothing`; the moment code keeps updating `1/σᵢ²(ζ)` each evaluation
+  (default, continuously-updated GMM, byte-identical to the previous behavior).
+- `:proxy` → `1/var(uqᵢ)` computed once from the FE/control-residualized flows,
+  so the moment map is a fixed quadratic in ζ under incomplete coverage.
+- `:fixed` → the user-supplied `precision_weights` vector (length `N`, in sorted
+  entity order), enabling a two-step estimator (proxy first pass, then precisions
+  from the first-step residuals).
+"""
+function resolve_precision(precision_mode, precision_weights, uq, obs_index)
+    if precision_mode == :cue
+        return nothing
+    elseif precision_mode == :proxy
+        return 1 ./ calculate_entity_variance(uq, obs_index)
+    elseif precision_mode == :fixed
+        isnothing(precision_weights) &&
+            throw(ArgumentError("precision_mode = :fixed requires a `precision_weights` vector (length N, sorted entity order)."))
+        length(precision_weights) == obs_index.N ||
+            throw(ArgumentError("`precision_weights` must have length N = $(obs_index.N) (got $(length(precision_weights)))."))
+        return collect(float.(precision_weights))
+    else
+        throw(ArgumentError("Unknown precision_mode = $(precision_mode); use :cue, :proxy, or :fixed."))
+    end
+end
+
 function giv(
     df,
     formula::FormulaTerm,
@@ -112,11 +154,15 @@ function giv(
     save_df=false,
     complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
     return_vcov=true,
-    contrasts=Dict{Symbol,Any}(), # not tested; 
+    contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
     pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
+    precision_mode=:cue,
+    precision_weights=nothing,
+    method=:trust_region,
+    autodiff=:central,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -152,6 +198,10 @@ function giv(
         throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
     end
 
+    # Fixed proxy/user precision weights (opt-in non-CUE weighting). `nothing`
+    # keeps the continuously-updated CUE weights (default, byte-identical behavior).
+    precisionvec = resolve_precision(precision_mode, precision_weights, uq, obs_index)
+
     guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
         uq,
@@ -166,19 +216,28 @@ function giv(
         solver_options=solver_options,
         n_pcs=n_pcs,
         pca_option=pca_option,
+        precision=precisionvec,
+        method=method,
+        autodiff=autodiff,
     )
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
     β = β_q + β_Cp * ζ̂
 
     û = uq + uCp * ζ̂
-    if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off. 
-        if complete_coverage
-            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+    if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
+        if isnothing(precisionvec)
+            if complete_coverage
+                σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+            else
+                # without complete coverage of the market, we do not have aggregate elasticity
+                # and hence it's not exactly optimal
+                σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
+            end
         else
-            # without complete coverage of the market, we do not have aggregate elasticity
-            # and hence it's not exactly optimal
-            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
+            # Fixed-weight mode: SEs use the same fixed weights as the moments
+            # (not the CUE-optimal weights), via the general sandwich.
+            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index; precision=precisionvec)
         end
         if size(X_feres, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
@@ -510,10 +569,12 @@ function build_error_function(df,
     exclude_pairs=Dict{Int,Vector{Int}}(),
     algorithm=:iv,
     quiet=false,
-    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
-    contrasts=Dict{Symbol,Any}(), # not tested; 
+    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword.
+    contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
+    precision_mode=:cue,
+    precision_weights=nothing,
     kwargs...
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
@@ -569,7 +630,8 @@ function build_error_function(df,
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
-        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option)
-        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs)
+        precisionvec = resolve_precision(precision_mode, precision_weights, uq, obs_index)
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option; precision=precisionvec)
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs, precision=precisionvec)
     end
 end

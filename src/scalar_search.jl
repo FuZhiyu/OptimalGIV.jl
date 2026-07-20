@@ -26,6 +26,9 @@ function estimate_giv(
     solver_options=(; ftol=1e-6),
     n_pcs=0,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
+    precision=nothing,  # fixed-weight modes are not applicable to :scalar_search; absorb & ignore
+    method=:trust_region,
+    autodiff=:central,
     kwargs...,
 )
     tol = solver_options.ftol

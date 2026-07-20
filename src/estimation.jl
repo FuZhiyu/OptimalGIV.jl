@@ -11,6 +11,9 @@ function estimate_giv(
     solver_options=(;),
     n_pcs=0,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
+    precision=nothing,
+    method=:trust_region,
+    autodiff=:central,
 ) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -20,14 +23,16 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option)
+    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision)
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
 
     res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option),
+        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision),
         guess;
+        method=method,
+        autodiff=autodiff,
         solver_options...,
     )
 
@@ -41,24 +46,23 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000))
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
 
     # Calculate residuals
     u = q + Cp * ζ
-    
+
     # Extract PCs and update residuals if requested
     loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
     if n_pcs > 0
         _, loadings_matrix, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
     end
 
-    # Calculate variance by entity using updated residuals
-    σu²vec = calculate_entity_variance(u, obs_index)
-    precision = 1 ./ σu²vec
-    # precision = precision ./ sum(precision)
+    # Entity precision weights. CUE (`precision === nothing`): update with ζ via
+    # residual variance. Fixed-weight mode: use the supplied data-based precisions.
+    prec = isnothing(precision) ? 1 ./ calculate_entity_variance(u, obs_index) : precision
 
     # Initialize error and weightsum
     err = zeros(eltype(ζ), Nmom, T)
@@ -81,7 +85,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                     continue
                 end
 
-                weight_i = C[idx_i, imom] * precision[i]
+                weight_i = C[idx_i, imom] * prec[i]
 
                 for idx_j in (idx_i+1):end_idx
                     j = obs_index.ids[idx_j]
@@ -108,7 +112,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                     continue
                 end
 
-                weight_j = C[idx_j, imom] * precision[j]
+                weight_j = C[idx_j, imom] * prec[j]
 
                 for idx_i in start_idx:(idx_j-1)
                     i = obs_index.ids[idx_i]
@@ -148,17 +152,10 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000))
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing)
 
     Nm = length(ζ)
     N, T = obs_index.N, obs_index.T
-    # Compute period weights if complete_coverage constraint holds
-    Mweights = ones(eltype(ζ), T)
-    if complete_coverage
-        ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
-        Mvec = 1 ./ ζSvec
-        Mweights .= Mvec ./ sum(Mvec)
-    end
     err = zeros(eltype(ζ), Nm, T)
 
     # residuals and entity-level precision ------------------------------
@@ -170,8 +167,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
         _, loadings_matrix, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
     end
 
-    σu²vec = calculate_entity_variance(u, obs_index)
-    prec = inv.(σu²vec)
+    # Entity precision weights. CUE (`precision === nothing`): update with ζ via
+    # residual variance. Fixed-weight mode: use the supplied data-based precisions.
+    prec = isnothing(precision) ? inv.(calculate_entity_variance(u, obs_index)) : precision
 
     weightsum = zeros(eltype(ζ), Nm, T)
     # 1️⃣ fast O(N) pass
@@ -371,7 +369,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadin
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000))
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing)
     if n_pcs > 0
         throw(ArgumentError("PC extraction (n_pcs > 0) is not yet supported for the :debiased_ols algorithm. Use :iv_twopass instead."))
     end
@@ -382,10 +380,10 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     # Calculate residuals
     u = q + Cp * ζ
 
-    # Calculate variance by entity
-    σu²vec = calculate_entity_variance(u, obs_index)
-    precision = 1 ./ σu²vec
-    precision ./= sum(precision)
+    # Entity precision weights. CUE (`precision === nothing`): update with ζ via
+    # residual variance (normalized). Fixed-weight mode: use the supplied precisions.
+    prec = isnothing(precision) ? (1 ./ calculate_entity_variance(u, obs_index)) : copy(precision)
+    prec ./= sum(prec)
 
     # Initialize error and weightsum
     err = zeros(eltype(ζ), Nmom, T)
@@ -409,7 +407,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
                     continue
                 end
 
-                weight = precision[i]
+                weight = prec[i]
                 uCp = u[idx] * Cp[idx, imom]
                 CSσ² = u[idx]^2 * C[idx, imom] * S[idx]
                 # alternatively, use estimated variance
@@ -430,8 +428,8 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
-mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000)) = 
-    vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option); dims=2))
+mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing) =
+    vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option; precision=precision); dims=2))
 
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Nmom = length(ζ)
@@ -511,7 +509,7 @@ end
 
 
 
-function solve_vcov(u, S, C, Cp, obs_index)
+function solve_vcov(u, S, C, Cp, obs_index; precision=nothing)
     Nmom = size(C, 2)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
@@ -539,7 +537,10 @@ function solve_vcov(u, S, C, Cp, obs_index)
         Vdiag[idx] = σu²vec[i] * σu²vec[j]
     end
 
-    precision = 1 ./ σu²vec
+    # W uses the estimation weights: CUE (`precision === nothing`) uses 1/σu², the
+    # fixed-weight mode carries in the same fixed precisions used in the moments so
+    # the sandwich SEs are consistent with the estimator actually solved.
+    prec = isnothing(precision) ? 1 ./ σu²vec : precision
     # Step 4: Compute W matrix (previous D without Mvec scaling)
     for t in 1:T
         for idx in 1:n_pairs
@@ -551,7 +552,7 @@ function solve_vcov(u, S, C, Cp, obs_index)
             end
             for k in 1:Nmom
                 # when we do not have the full market, we do not scale it by Mvec
-                W[idx, k, t] = precision[i] * S[j_pos] * C[i_pos, k] + precision[j] * S[i_pos] * C[j_pos, k]
+                W[idx, k, t] = prec[i] * S[j_pos] * C[i_pos, k] + prec[j] * S[i_pos] * C[j_pos, k]
                 D[idx, k, t] = u[j_pos] * Cp[i_pos, k] + u[i_pos] * Cp[j_pos, k]
             end
         end
