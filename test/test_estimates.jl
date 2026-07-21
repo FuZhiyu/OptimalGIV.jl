@@ -12,6 +12,7 @@ df.id = CategoricalArray(df.id)
         :t,
         :absS;
         guess=Dict("Aggregate" => 2.0),
+        complete_coverage=true,
         save=:all,
         algorithm=:scalar_search,
     )
@@ -28,6 +29,7 @@ df.id = CategoricalArray(df.id)
         :t,
         :absS;
         guess=Dict("Aggregate" => 2.0),
+        complete_coverage=true,
         algorithm=:scalar_search,
     )
 
@@ -42,6 +44,7 @@ df.id = CategoricalArray(df.id)
         :t,
         :absS;
         guess=[1.0],
+        complete_coverage=true,
         algorithm=:iv,
         precision_weights=:cue,  # known-answer CUE reference values
         # savedf=true,
@@ -55,6 +58,7 @@ df.id = CategoricalArray(df.id)
         :t,
         :absS;
         guess=[1.0],
+        complete_coverage=true,
         algorithm=:debiased_ols,
         precision_weights=:cue,  # known-answer CUE reference values
     )
@@ -71,6 +75,7 @@ end
         :t,
         :absS;
         guess=Dict("Aggregate" => 2.5),
+        complete_coverage=true,
         algorithm=:scalar_search,
     )
     # est = estimate_model(simmodel.data,  ζSguess = 2.5,)
@@ -91,6 +96,7 @@ end
         :t,
         :absS;
         guess=ones(5),
+        complete_coverage=true,
         algorithm=:iv,
         precision_weights=:cue,  # known-answer CUE reference values
     )
@@ -102,6 +108,7 @@ end
         :t,
         :absS;
         guess=ones(5),
+        complete_coverage=true,
         algorithm=:debiased_ols,
         precision_weights=:cue,  # known-answer CUE reference values
     )
@@ -121,6 +128,7 @@ end
         givmodel = giv(
             df, f, :id, :t, :absS;
             guess=Dict("Aggregate" => 2.0),
+            complete_coverage=true,
             algorithm=:scalar_search,
             tol=1e-6
         )
@@ -128,7 +136,8 @@ end
         # Build the error function
         err_func, components = build_error_function(
             df, f, :id, :t, :absS;
-            algorithm=:scalar_search
+            algorithm=:scalar_search,
+            complete_coverage=true,
         )
         # The aggregate elasticity (ζS) should yield zero error
         # For scalar_search, the error function takes ζS directly
@@ -145,6 +154,7 @@ end
         givmodel = giv(
             df, f, :id, :t, :absS;
             guess=[1.0],
+            complete_coverage=true,
             algorithm=:iv,
             precision_weights=:cue,  # pin: the error function below is the CUE moment map
             tol=1e-6
@@ -154,7 +164,8 @@ end
         err_func, components = build_error_function(
             df, f, :id, :t, :absS;
             algorithm=:iv,
-            precision_weights=:cue
+            precision_weights=:cue,
+            complete_coverage=true,
         )
 
         # Extract just the elasticity coefficients (not the factor loadings)
@@ -173,6 +184,7 @@ end
         givmodel = giv(
             df, f, :id, :t, :absS;
             guess=[1.0],
+            complete_coverage=true,
             algorithm=:debiased_ols,
             precision_weights=:cue,  # pin: the error function below is the CUE moment map
         )
@@ -181,7 +193,8 @@ end
         err_func, components = build_error_function(
             df, f, :id, :t, :absS;
             algorithm=:debiased_ols,
-            precision_weights=:cue
+            precision_weights=:cue,
+            complete_coverage=true,
         )
 
         # Extract just the elasticity coefficients
@@ -199,12 +212,14 @@ end
         givmodel = giv(
             df, f_het, :id, :t, :absS;
             guess=Dict("Aggregate" => 2.5),
+            complete_coverage=true,
             algorithm=:scalar_search,
         )
 
         err_func, components = build_error_function(
             df, f_het, :id, :t, :absS;
-            algorithm=:scalar_search
+            algorithm=:scalar_search,
+            complete_coverage=true,
         )
 
         # For scalar_search with heterogeneous elasticity, 
@@ -220,6 +235,7 @@ end
         givmodel = giv(
             df, f_het, :id, :t, :absS;
             guess=ones(5),
+            complete_coverage=true,
             algorithm=:iv,
             precision_weights=:cue,  # pin: the error function below is the CUE moment map
             tol=1e-8,
@@ -228,7 +244,8 @@ end
         err_func, components = build_error_function(
             df, f_het, :id, :t, :absS;
             algorithm=:iv,
-            precision_weights=:cue
+            precision_weights=:cue,
+            complete_coverage=true,
         )
 
         # Extract elasticity coefficients (first 5 for 5 categories)
@@ -245,6 +262,7 @@ end
         givmodel = giv(
             df, f_het, :id, :t, :absS;
             guess=ones(5),
+            complete_coverage=true,
             algorithm=:debiased_ols,
             precision_weights=:cue,  # pin: the error function below is the CUE moment map
             tol=1e-8,
@@ -253,7 +271,8 @@ end
         err_func, components = build_error_function(
             df, f_het, :id, :t, :absS;
             algorithm=:debiased_ols,
-            precision_weights=:cue
+            precision_weights=:cue,
+            complete_coverage=true,
         )
 
         ζ = endog_coef(givmodel)
@@ -267,7 +286,8 @@ end
 
         err_func, components = build_error_function(
             df, f, :id, :t, :absS;
-            algorithm=:iv
+            algorithm=:iv,
+            complete_coverage=true,
         )
 
         # Test with wrong coefficient (should NOT be zero)

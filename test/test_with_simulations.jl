@@ -31,7 +31,7 @@ function estimate_simulated_model(df::DataFrame, formula;
     end
     model = giv(df, formula, :id, :t, :S;
         guess=guess, save=save, quiet=quiet,
-        solver_options=solver_options, kwargs...)
+        complete_coverage=true, solver_options=solver_options, kwargs...)
     return model
 end
 
@@ -262,7 +262,7 @@ function benchmark_metrics(reps, arm)
              (; precision_weights=r.oracle_w)  # oracle
         m = try
             giv(df, BENCH_FORMULA, :id, :t, :S; guess=guess, quiet=true,
-                solver_options=(; ftol=1e-4, iterations=100), kw...)
+                complete_coverage=true, solver_options=(; ftol=1e-4, iterations=100), kw...)
         catch e
             @warn "benchmark arm $arm error: $e"
             continue
@@ -321,7 +321,7 @@ function convergence_rate(simparamstr, formula, N; guess_kind=:true, Nsims=200,
             guess_kind == :ones ? ones(N) : nothing  # :ols → solver's own default start
         m = try
             giv(df, formula, :id, :t, :S; guess=g, quiet=true,
-                solver_options=(; ftol=1e-4, iterations=100), kwargs...)
+                complete_coverage=true, solver_options=(; ftol=1e-4, iterations=100), kwargs...)
         catch
             nothing
         end

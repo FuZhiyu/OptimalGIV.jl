@@ -55,7 +55,7 @@ function giv(
     quiet=false,
     save=:none, # :all or :fe or :none or :residuals
     save_df=false,
-    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
+    complete_coverage::Bool,
     return_vcov=true,
     contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
@@ -89,13 +89,11 @@ function giv(
     Nζ = size(C, 2)
     Nβ = size(X_original, 2)
 
-    if isnothing(complete_coverage)
-        complete_coverage = check_market_clearing(q, S, obs_index)
+    if complete_coverage && !check_market_clearing(q, S, obs_index)
+        throw(ArgumentError("`complete_coverage=true` requires market clearing in every period, but the supplied data fail the adding-up check."))
     end
-    if !quiet &&
-       algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !complete_coverage
-        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    if algorithm ∈ [:scalar_search, :debiased_ols] && !complete_coverage
+        throw(ArgumentError("`algorithm=$(algorithm)` requires `complete_coverage=true`."))
     end
 
     # Resolve omission to the two-step default. Scalar search ignores precision
@@ -107,6 +105,7 @@ function giv(
                    resolve_precision(precision_weights, uq, obs_index)
 
     guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
+    Mweights = nothing
     ζ̂, converged = estimate_giv(
         uq,
         uCp,
@@ -133,6 +132,8 @@ function giv(
     if precision_weights === :twostep && algorithm != :scalar_search
         if converged
             precisionvec = 1 ./ calculate_entity_variance(uq + uCp * ζ̂, obs_index)
+            Mweights = complete_coverage && algorithm in (:iv, :iv_twopass) ?
+                       period_mweights(ζ̂, C, S, obs_index) : nothing
             ζ̂, converged2 = estimate_giv(
                 uq,
                 uCp,
@@ -147,6 +148,7 @@ function giv(
                 n_pcs=n_pcs,
                 pca_option=pca_option,
                 precision=precisionvec,
+                Mweights=Mweights,
             )
             converged = converged && converged2
         elseif !quiet
@@ -171,13 +173,10 @@ function giv(
                 σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
             end
         else
-            # Fixed-weight mode: SEs use the same fixed weights as the moments
-            # (not the CUE-optimal weights), via the general sandwich. When the
-            # `:iv` kernels solved period-Mweighted moments (complete coverage),
-            # carry the same Mweights evaluated at the solution into the sandwich `W`.
-            Mw = complete_coverage && algorithm in (:iv, :iv_twopass) ?
-                 period_mweights(ζ̂, C, S, obs_index) : nothing
-            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index; precision=precisionvec, Mweights=Mw)
+            # Fixed-weight SEs use the same frozen entity and period weights as the
+            # estimating moments. Raw/custom one-step has `Mweights === nothing`;
+            # feasible two-step carries the multipliers computed after step 1.
+            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index; precision=precisionvec, Mweights=Mweights)
         end
         if size(X_feres, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
@@ -360,9 +359,8 @@ conditions.
   `:scalar_search` are specialized estimators that require complete coverage.
 - `exclude_pairs = Dict()`: Entity pairs to exclude from the moment conditions,
   supplied as `Dict(i => [j, ...])`.
-- `complete_coverage = nothing`: Whether the sample covers the full market.
-  Coverage is detected automatically when omitted; set this only to override
-  detection.
+- `complete_coverage`: Required Boolean declaring whether the data design covers
+  the full market. A `true` declaration is validated against market clearing.
 - `quiet = false`: Suppress informational messages and warnings.
 - `save = :none`: Retain `:residuals`, `:fe`, `:all`, or neither (`:none`).
 - `save_df = false`: Store the processed estimation data in the returned model.
@@ -539,7 +537,7 @@ end
 """
 Check if the market clearing condition (adding-up constraint) is satisfied for each time period.
 
-Returns true if the constraint is violated in any period.
+Returns `true` when the adding-up constraint is satisfied in every period.
 """
 function check_market_clearing(q, S, obs_index)
     for t in 1:obs_index.T
@@ -585,7 +583,7 @@ function build_error_function(df,
     exclude_pairs=Dict{Int,Vector{Int}}(),
     algorithm=:iv,
     quiet=false,
-    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword.
+    complete_coverage::Bool,
     contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
@@ -614,13 +612,11 @@ function build_error_function(df,
     formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
     C = modelcols(collect_matrix_terms(formula_slope), df)
 
-    if isnothing(complete_coverage)
-        complete_coverage = check_market_clearing(q, S, obs_index)
+    if complete_coverage && !check_market_clearing(q, S, obs_index)
+        throw(ArgumentError("`complete_coverage=true` requires market clearing in every period, but the supplied data fail the adding-up check."))
     end
-    if !quiet &&
-       algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !complete_coverage
-        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    if algorithm ∈ [:scalar_search, :debiased_ols] && !complete_coverage
+        throw(ArgumentError("`algorithm=$(algorithm)` requires `complete_coverage=true`."))
     end
     if algorithm == :scalar_search
         # Check if panel is balanced before proceeding

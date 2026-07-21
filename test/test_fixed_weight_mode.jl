@@ -1,6 +1,7 @@
 using Test, OptimalGIV, Random, LinearAlgebra, Logging
 using OptimalGIV: build_error_function, resolve_precision, calculate_entity_variance,
-    solve_vcov, moment_conditions, period_mweights
+    aggregate_elasticity_in_domain, check_market_clearing, create_observation_index,
+    estimate_giv, solve_vcov, moment_conditions, period_mweights
 using DataFrames, CSV, CategoricalArrays
 
 # ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ const _FEQ = @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0)
 
 @testset "fixed-weight mode: precision resolution" begin
     df = _load_simdata1()
-    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     obs_index = mats.obs_index
     N = obs_index.N
 
@@ -50,16 +51,67 @@ const _FEQ = @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0)
     @test_throws ArgumentError resolve_precision(:nonsense, mats.uq, obs_index)
 end
 
+@testset "coverage regime is explicit and validated" begin
+    df = _load_simdata1()
+    @test_throws UndefKeywordError giv(df, _FEQ, :id, :t, :absS;
+        guess=ones(5), quiet=true, algorithm=:iv)
+    @test_throws UndefKeywordError build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv)
+
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
+    @test check_market_clearing(df.q, df.absS, mats.obs_index)
+    @test_throws UndefKeywordError estimate_giv(mats.uq, mats.uCp, mats.C, mats.S,
+        mats.obs_index, Val(:iv); guess=ones(5), quiet=true, precision=mats.precision)
+
+    # An explicitly incomplete regime remains valid even when the realized sample adds up.
+    m_incomplete = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+        algorithm=:iv, complete_coverage=false, precision_weights=:raw_onestep)
+    @test !m_incomplete.complete_coverage
+
+    # An asserted complete regime is a validation claim, not an override.
+    df_bad = copy(df)
+    df_bad.q[1] += 1.0
+    @test_throws ArgumentError giv(df_bad, _FEQ, :id, :t, :absS; guess=ones(5),
+        quiet=true, algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
+
+    # Full-market-only algorithms reject incomplete coverage independently of logging.
+    @test_throws ArgumentError giv(df, _FEQ, :id, :t, :absS; guess=ones(5),
+        quiet=true, algorithm=:debiased_ols, complete_coverage=false, precision_weights=:cue)
+    @test_throws ArgumentError giv(df, @formula(q + endog(p) ~ fe(id) & (η1 + η2) + 0),
+        :id, :t, :absS; guess=Dict("Aggregate" => 2.0), quiet=true,
+        algorithm=:scalar_search, complete_coverage=false)
+end
+
+@testset "complete-coverage clamp and final-root domain" begin
+    panel = DataFrame(id=CategoricalArray(repeat(1:2, 4)), t=repeat(1:4; inner=2))
+    obs_index = create_observation_index(panel, :id, :t, Dict{Int,Vector{Int}}())
+    q = repeat([1.0, 2.0], 4)
+    Cp = ones(8, 1)
+    C = ones(8, 1)
+    S = fill(0.5, 8)
+    Mw = period_mweights([0.0], C, S, obs_index)
+    @test all(isfinite, Mw) && sum(Mw) == 1.0
+    @test !aggregate_elasticity_in_domain([0.0], C, S, obs_index)
+    @test aggregate_elasticity_in_domain([1.0], C, S, obs_index)
+
+    ζ̂, converged = estimate_giv(q, Cp, C, S, obs_index, Val(:iv);
+        guess=[-1.0], quiet=true, complete_coverage=true,
+        precision=ones(2), solver_options=(; ftol=1e-10))
+    @test ζ̂ == [-1.0]
+    @test !converged
+end
+
 @testset "fixed-weight mode: :iv ≡ :iv_twopass" begin
     df = _load_simdata1()
     for mode in (:raw_onestep, :custom)
         # For :custom, build the same 1/var(uq) raw vector explicitly
-        _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+        _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
         w = mats.precision
         kw = mode == :custom ? (; precision_weights=w) : (; precision_weights=:raw_onestep)
 
-        m_iv = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, kw...)
-        m_2p = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv_twopass, kw...)
+        m_iv = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, complete_coverage=true, kw...)
+        m_2p = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv_twopass, complete_coverage=true, kw...)
         @test maximum(abs, endog_coef(m_iv) - endog_coef(m_2p)) < 1e-8
         @test maximum(abs, vcov(m_iv) - vcov(m_2p)) < 1e-6
     end
@@ -67,11 +119,11 @@ end
 
 @testset "fixed-weight mode: custom raw weights ≡ :raw_onestep" begin
     df = _load_simdata1()
-    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     w = mats.precision
-    m_proxy = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, precision_weights=:raw_onestep)
+    m_proxy = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     m_fixed = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-        precision_weights=w)
+        precision_weights=w, complete_coverage=true)
     @test endog_coef(m_proxy) ≈ endog_coef(m_fixed)
     @test vcov(m_proxy) ≈ vcov(m_fixed)
 end
@@ -79,8 +131,8 @@ end
 @testset "fixed-weight mode: raw one-step roots ≈ CUE roots (well-behaved fixture)" begin
     df = _load_simdata1()
     m_cue = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-        precision_weights=:cue)
-    m_proxy = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, precision_weights=:raw_onestep)
+        precision_weights=:cue, complete_coverage=true)
+    m_proxy = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     # Both converge; raw weights over-weight via var(uq) ≥ var(u), leaving a small gap.
     @test m_cue.converged && m_proxy.converged
     @test maximum(abs, endog_coef(m_cue) - endog_coef(m_proxy)) < 1e-3
@@ -119,9 +171,9 @@ end
     base = (; ftol=1e-8, show_trace=false, iterations=100, method=:trust_region)
     for weights in (:raw_onestep, :cue)
         m_central = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-            precision_weights=weights, solver_options=(; base..., autodiff=:central))
+            precision_weights=weights, complete_coverage=true, solver_options=(; base..., autodiff=:central))
         m_forward = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-            precision_weights=weights, solver_options=(; base..., autodiff=:forward))
+            precision_weights=weights, complete_coverage=true, solver_options=(; base..., autodiff=:forward))
         @test m_central.converged && m_forward.converged
         @test maximum(abs, endog_coef(m_central) - endog_coef(m_forward)) < 1e-8
     end
@@ -129,9 +181,9 @@ end
 
 @testset "fixed-weight mode: vcov uses fixed weights, not CUE-optimal" begin
     df = _load_simdata1()
-    m_proxy = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, precision_weights=:raw_onestep)
+    m_proxy = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     # reconstruct the sandwich vcov with the same fixed precision from the raw pieces
-    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     û = mats.uq + mats.uCp * endog_coef(m_proxy)
     _, Σref = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index; precision=mats.precision)
     @test vcov(m_proxy) ≈ Σref
@@ -140,11 +192,9 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Complete-coverage sandwich SEs: the :iv kernels scale each period's moments by
-# period_mweights (∝ 1/clamp(|ζS_t|, √eps, Inf), normalized); under the fixed-weight
-# modes solve_vcov must carry the same Mweights (evaluated at the solution) into W
-# so the SEs match the moments actually solved (giv-solver-stability/
-# complete-coverage-vcov).
+# Complete-coverage feasible two-step: raw/custom one-step uses equal periods;
+# step 2 freezes period_mweights constructed at the step-1 root and carries the
+# same vector into its moments, Jacobian, and sandwich vcov.
 # ---------------------------------------------------------------------------
 
 # Independent O(N²) reference: build the period-scaled sandwich A/B directly from
@@ -175,9 +225,9 @@ function _reference_sandwich_vcov(u, S, C, Cp, obs_index, prec, Mw)
     return Symmetric(Σ + Σ') / 2
 end
 
-@testset "complete-coverage vcov: period-scaled sandwich (time-varying ζS)" begin
+@testset "complete-coverage two-step: frozen period-scaled moments and sandwich" begin
     # DGP with genuinely time-varying aggregate elasticity: sizes S_it move over t
-    # and p_t clears the market exactly, so complete coverage is auto-detected.
+    # and p_t clears the market exactly.
     Random.seed!(20260720)
     N, T = 5, 80
     ζtrue = [0.5, 1.0, 1.5, 2.0, 3.0]
@@ -195,32 +245,43 @@ end
     )
     fml = @formula(q + id & endog(p) ~ 0)
 
-    m = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv, precision_weights=:raw_onestep)
-    @test m.complete_coverage
-    @test m.converged
+    m1 = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    @test m1.complete_coverage && m1.converged
+    ef_complete, mats = build_error_function(df, fml, :id, :t, :S;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
+    ef_incomplete, _ = build_error_function(df, fml, :id, :t, :S;
+        algorithm=:iv, complete_coverage=false, precision_weights=:raw_onestep)
+    @test ef_complete(ζtrue) == ef_incomplete(ζtrue) # raw one-step uses equal periods
 
-    _, mats = build_error_function(df, fml, :id, :t, :S; algorithm=:iv, precision_weights=:raw_onestep)
-    û = mats.uq + mats.uCp * endog_coef(m)
-    Mw = period_mweights(endog_coef(m), mats.C, mats.S, mats.obs_index)
-    @test maximum(Mw) / minimum(Mw) > 1.2   # period weights genuinely time-varying
+    û₁ = mats.uq + mats.uCp * endog_coef(m1)
+    w2 = 1 ./ calculate_entity_variance(û₁, mats.obs_index)
+    Mw1 = period_mweights(endog_coef(m1), mats.C, mats.S, mats.obs_index)
+    @test maximum(Mw1) / minimum(Mw1) > 1.2
 
-    _, Σ_scaled = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index;
-        precision=mats.precision, Mweights=Mw)
-    _, Σ_unscaled = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index;
-        precision=mats.precision)
+    solver = (; ftol=1e-6, show_trace=false, iterations=100)
+    ζ2, converged2 = estimate_giv(mats.uq, mats.uCp, mats.C, mats.S, mats.obs_index,
+        Val(:iv); guess=endog_coef(m1), quiet=true, complete_coverage=true,
+        solver_options=solver, precision=w2, Mweights=Mw1)
+    m2 = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:twostep)
+    @test converged2 && m2.converged
+    @test endog_coef(m2) == ζ2
 
-    # giv() routes complete-coverage fixed-mode SEs through the period-scaled sandwich
-    @test vcov(m) ≈ Σ_scaled
-    # teeth: the period scaling genuinely moves the SEs
-    @test norm(Σ_scaled - Σ_unscaled) / norm(Σ_unscaled) > 1e-3
+    û₂ = mats.uq + mats.uCp * ζ2
+    _, Σ_scaled = solve_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index;
+        precision=w2, Mweights=Mw1)
+    @test vcov(m2) == Σ_scaled
+
+    # Teeth: recomputing period weights at the second-step root changes the vcov.
+    Mw2 = period_mweights(ζ2, mats.C, mats.S, mats.obs_index)
+    _, Σ_recomputed = solve_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index;
+        precision=w2, Mweights=Mw2)
+    @test norm(Σ_scaled - Σ_recomputed) / norm(Σ_scaled) > 1e-6
     # independent O(N²) reference reproduces the fast implementation
-    Σ_ref = _reference_sandwich_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index,
-        mats.precision, Mw)
+    Σ_ref = _reference_sandwich_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index,
+        w2, Mw1)
     @test Σ_scaled ≈ Σ_ref rtol = 1e-8
-    # and with Mw === nothing the reference also reproduces the unscaled sandwich
-    Σ_ref0 = _reference_sandwich_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index,
-        mats.precision, nothing)
-    @test Σ_unscaled ≈ Σ_ref0 rtol = 1e-8
 end
 
 @testset "complete-coverage vcov: uniform Mweights leave simdata1 SEs unchanged" begin
@@ -228,10 +289,12 @@ end
     # and a uniform rescaling of the periods cancels in A⁻¹BA⁻ᵀ: the fix must leave
     # these SEs unchanged relative to the unscaled sandwich.
     df = _load_simdata1()
-    m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, precision_weights=:raw_onestep)
+    m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
     @test m.complete_coverage
 
-    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     û = mats.uq + mats.uCp * endog_coef(m)
     Mw = period_mweights(endog_coef(m), mats.C, mats.S, mats.obs_index)
     @test maximum(Mw) - minimum(Mw) < 1e-12   # uniform period weights
@@ -261,15 +324,15 @@ end
 
 @testset "twostep default: implicit default ≡ explicit :twostep (bit-equal)" begin
     df = _load_simdata1()
-    m_default = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv)
+    m_default = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, complete_coverage=true)
     m_twostep = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-        precision_weights=:twostep)
+        precision_weights=:twostep, complete_coverage=true)
     @test endog_coef(m_default) == endog_coef(m_twostep)
     @test vcov(m_default) == vcov(m_twostep)
     @test m_default.converged
     # :cue remains available opt-in and is a genuinely different estimator here
     m_cue = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-        precision_weights=:cue)
+        precision_weights=:cue, complete_coverage=true)
     @test endog_coef(m_cue) != endog_coef(m_twostep)
     @test maximum(abs, endog_coef(m_cue) - endog_coef(m_twostep)) < 1e-3  # near-efficient
 end
@@ -277,7 +340,7 @@ end
 @testset "twostep default: one-time migration warning" begin
     df = _load_simdata1()
     gcall(; kw...) = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), algorithm=:iv,
-        solver_options=(; ftol=1e-6, show_trace=false, iterations=100), kw...)
+        complete_coverage=true, solver_options=(; ftol=1e-6, show_trace=false, iterations=100), kw...)
 
     OptimalGIV._TWOSTEP_DEFAULT_WARNED[] = false
     for weights in (:twostep, :raw_onestep, :cue, ones(5))
@@ -296,16 +359,17 @@ end
     df = _load_simdata1()
     # step 1 by hand: the :raw_onestep solve and its residuals
     m1 = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-        precision_weights=:raw_onestep)
+        precision_weights=:raw_onestep, complete_coverage=true)
     @test m1.converged
-    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
     û₁ = mats.uq + mats.uCp * endog_coef(m1)
     w2 = 1 ./ calculate_entity_variance(û₁, mats.obs_index)
     # step 2 by hand: custom step-1-residual precisions, warm-started at ζ̂₁
     m_fixed = giv(df, _FEQ, :id, :t, :absS; guess=endog_coef(m1), quiet=true, algorithm=:iv,
-        precision_weights=w2)
+        precision_weights=w2, complete_coverage=true)
     m_two = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
-        precision_weights=:twostep)
+        precision_weights=:twostep, complete_coverage=true)
     @test endog_coef(m_two) == endog_coef(m_fixed)
-    @test vcov(m_two) == vcov(m_fixed)
+    @test vcov(m_two) ≈ vcov(m_fixed) rtol = 1e-12
 end

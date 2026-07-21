@@ -69,10 +69,8 @@ export coef,
         η=[-1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0],
     )
     f = @formula(q + id & endog(p) ~ id & η + fe(id))
-    kp = (; quiet=true, save=:all)
+    kp = (; quiet=true, save=:all, complete_coverage=false)
     @compile_workload begin
-        giv(df, f, :id, :t, :S; algorithm=:scalar_search, guess=Dict("Aggregate" => 1.0), kp...)
-        giv(df, f, :id, :t, :S; algorithm=:debiased_ols, kp...)
         giv(df, f, :id, :t, :S; algorithm=:iv, kp...)
         giv(df, f, :id, :t, :S; algorithm=:iv_twopass, kp...)
     end

@@ -32,7 +32,7 @@ agg_truth(df) = (iddf = sort(unique(df, :id), :id); (sum(iddf.S .* iddf.ζ), idd
 function one_fit(df, S, trueagg; guess, solver, formula=FORMULA, kw...)
     m = try
         giv(df, formula, :id, :t, :S; guess=guess, quiet=true, algorithm=:iv,
-            solver_options=solver, kw...)
+            complete_coverage=true, solver_options=solver, kw...)
     catch
         return (false, missing, missing, missing)
     end
@@ -47,7 +47,7 @@ end
 function twostep_fit(df, S, trueagg; guess, solver)
     m1 = try
         giv(df, FORMULA, :id, :t, :S; guess=guess, quiet=true, algorithm=:iv,
-            solver_options=solver, precision_weights=:raw_onestep)
+            complete_coverage=true, solver_options=solver, precision_weights=:raw_onestep)
     catch
         return (false, missing, missing, missing)
     end

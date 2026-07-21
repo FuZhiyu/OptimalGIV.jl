@@ -161,6 +161,7 @@ end
         guess=ones(5),
         quiet=true,
         algorithm=:iv_twopass,
+        complete_coverage=true,
         precision_weights=:cue,  # pin: this testset compares the CUE-optimal vs sandwich vcov
     )
 

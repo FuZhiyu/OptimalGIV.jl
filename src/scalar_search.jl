@@ -22,7 +22,7 @@ function estimate_giv(
     guess=nothing,
     constraints=nothing,
     quiet = false,
-    complete_coverage=true,
+    complete_coverage::Bool,
     solver_options=(; ftol=1e-6),
     n_pcs=0,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
@@ -82,6 +82,11 @@ function estimate_giv(
 
     ζ̂vecs = solve_ζi(ζS, qmat, p, S_vec, coefmapping; kwargs...)
     ζ̂, err = pick_closest_ζ(ζ̂vecs, ζS, S_vec, coefmapping)
+
+    if !aggregate_elasticity_in_domain(ζ̂, C, S, obs_index)
+        converged = false
+        !quiet && @warn "The reported root has nonpositive or near-zero aggregate elasticity under complete coverage."
+    end
 
     return ζ̂, converged
 end

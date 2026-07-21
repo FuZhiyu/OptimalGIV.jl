@@ -1,5 +1,5 @@
 using Test, OptimalGIV, Random, LinearAlgebra
-using OptimalGIV: build_error_function, mean_moment_jacobian
+using OptimalGIV: build_error_function, mean_moment_conditions, mean_moment_jacobian
 using OptimalGIV.NLsolve: nlsolve, converged
 using ForwardDiff
 using DataFrames, CSV, CategoricalArrays
@@ -10,8 +10,8 @@ using DataFrames, CSV, CategoricalArrays
 #
 # With fixed precisions the residuals u = uq + uCp ζ are linear in ζ, so the
 # Jacobian of the :iv/:iv_twopass moment map is exact in closed form (same O(N)
-# pair-sum identity as the moments; constant momweight; closed-form Mweights
-# product-rule term under complete coverage). These tests pin the hand-coded
+# pair-sum identity as the moments; constant momweight; optional frozen period
+# scaling under complete coverage). These tests pin the hand-coded
 # Jacobian against ForwardDiff across coverage regimes and exclusion patterns,
 # and check the solver root is unchanged relative to the FD/autodiff path.
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ end
 const _FEQ_AJ = @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0)
 
 # DGP with genuinely time-varying aggregate elasticity ζS_t (sizes move over t,
-# p_t clears the market exactly ⇒ complete coverage auto-detected); reused from
+# p_t clears the market exactly); reused from
 # the complete-coverage-vcov tests in test_fixed_weight_mode.jl.
 function _tv_zetaS_df(; N=5, T=80, seed=20260720)
     Random.seed!(seed)
@@ -71,32 +71,37 @@ end
     @test mats.jac_func(x) + mats.jac_func(y) ≈ mats.jac_func(x + y) + mats.jac_func(zeros(5)) atol = 1e-10
 end
 
-@testset "analytic Jacobian: complete coverage, time-varying ζS (Mweights term)" begin
+@testset "analytic Jacobian: frozen complete-coverage period scaling" begin
     df, ζtrue = _tv_zetaS_df()
     fml = @formula(q + id & endog(p) ~ 0)
-    ef, mats = build_error_function(df, fml, :id, :t, :S; algorithm=:iv, precision_weights=:raw_onestep)
+    ef_equal, mats = build_error_function(df, fml, :id, :t, :S;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     @test mats.jac_func !== nothing
 
     # teeth: the period Mweights are genuinely time-varying at the test points
     Mw = OptimalGIV.period_mweights(ζtrue, mats.C, mats.S, mats.obs_index)
     @test maximum(Mw) / minimum(Mw) > 1.2
 
+    ef_frozen = x -> mean_moment_conditions(x, mats.uq, mats.uCp, mats.C, mats.S,
+        mats.obs_index, true, Val(:iv); precision=mats.precision, Mweights=Mw)
+    jac_frozen = x -> mean_moment_jacobian(x, mats.uq, mats.uCp, mats.C, mats.S,
+        mats.obs_index, true, mats.precision; Mweights=Mw)
+
     Random.seed!(2)
     ζpoints = [ζtrue, ζtrue .+ 0.3 .* randn(5), abs.(randn(5)) .+ 0.2]
-    _test_jac_vs_forwarddiff(ef, mats.jac_func, ζpoints)
+    _test_jac_vs_forwarddiff(ef_frozen, jac_frozen, ζpoints)
+    # Frozen weights preserve the exact quadratic map and affine Jacobian.
+    x, y = randn(5), randn(5)
+    @test jac_frozen(x) + jac_frozen(y) ≈ jac_frozen(x + y) + jac_frozen(zeros(5)) atol = 1e-10
 
-    # teeth: dropping the Mweights product-rule term must fail — compare against the
-    # incomplete-coverage Jacobian rescaled naively (levels term matters)
-    ef0, mats0 = build_error_function(df, fml, :id, :t, :S; algorithm=:iv,
-        complete_coverage=false, precision_weights=:raw_onestep)
-    J_full = mats.jac_func(ζtrue)
-    J_nomw = mats0.jac_func(ζtrue)
-    @test norm(J_full - J_nomw) / norm(J_full) > 1e-3
+    # Teeth: frozen period weights remain in both the moments and Jacobian.
+    @test norm(ef_frozen(ζtrue) - ef_equal(ζtrue)) / norm(ef_frozen(ζtrue)) > 1e-3
+    @test norm(jac_frozen(ζtrue) - mats.jac_func(ζtrue)) / norm(jac_frozen(ζtrue)) > 1e-3
 
     # direct call (reusable interface) matches the closure from build_error_function
     J_direct = mean_moment_jacobian(ζtrue, mats.uq, mats.uCp, mats.C, mats.S,
-        mats.obs_index, true, mats.precision)
-    @test J_direct == J_full
+        mats.obs_index, true, mats.precision; Mweights=Mw)
+    @test J_direct == jac_frozen(ζtrue)
 end
 
 @testset "analytic Jacobian: excluded pairs" begin
@@ -117,7 +122,7 @@ end
     df2, ζtrue = _tv_zetaS_df()
     fml = @formula(q + id & endog(p) ~ 0)
     ef2, mats2 = build_error_function(df2, fml, :id, :t, :S;
-        algorithm=:iv, precision_weights=:raw_onestep, exclude_pairs=excl)
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep, exclude_pairs=excl)
     @test any(mats2.obs_index.exclpairs)
     _test_jac_vs_forwarddiff(ef2, mats2.jac_func, [ζtrue, ζtrue .+ 0.3 .* randn(5)])
 end
@@ -126,10 +131,11 @@ end
     df = _load_simdata1_aj()
     for alg in (:iv, :iv_twopass)
         ef, _ = build_error_function(df, _FEQ_AJ, :id, :t, :absS;
-            algorithm=alg, precision_weights=:raw_onestep)
+            algorithm=alg, complete_coverage=true, precision_weights=:raw_onestep)
         fd = nlsolve(ef, ones(5); method=:trust_region, autodiff=:central, ftol=1e-10)
         m = giv(df, _FEQ_AJ, :id, :t, :absS; guess=ones(5), quiet=true,
             algorithm=alg, precision_weights=:raw_onestep,
+            complete_coverage=true,
             solver_options=(; method=:trust_region, autodiff=:central, ftol=1e-10,
                 show_trace=false, iterations=100))
         @test m.converged && converged(fd)
@@ -137,17 +143,18 @@ end
     end
 
     # Removed top-level solver selectors have no compatibility aliases.
-    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true,
+    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true, complete_coverage=true,
         jacobian=:analytic)
-    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true,
+    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true, complete_coverage=true,
         method=:trust_region)
-    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true,
+    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true, complete_coverage=true,
         autodiff=:central)
 end
 
 @testset "analytic Jacobian: fewer kernel evaluations than finite differences" begin
     df = _load_simdata1_aj()
-    ef, mats = build_error_function(df, _FEQ_AJ, :id, :t, :absS; algorithm=:iv, precision_weights=:raw_onestep)
+    ef, mats = build_error_function(df, _FEQ_AJ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     guess = ones(5)
 
     cnt_fd = Ref(0)

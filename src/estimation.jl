@@ -7,11 +7,12 @@ function estimate_giv(
     ::A;
     guess=nothing,
     quiet=false,
-    complete_coverage=true,
+    complete_coverage::Bool,
     solver_options=(;),
     n_pcs=0,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     precision=nothing,
+    Mweights=nothing,
 ) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -21,7 +22,7 @@ function estimate_giv(
     end
 
     Nmom = size(Cp, 2)
-    fmom = x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision)
+    fmom = x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision, Mweights=Mweights)
     err0 = fmom(guess)
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
@@ -48,7 +49,7 @@ function estimate_giv(
         analytic_options = (; (k => v for (k, v) in pairs(solver_options) if k != :autodiff)...)
         nlsolve(
             fmom,
-            x -> mean_moment_jacobian(x, q, Cp, C, S, obs_index, complete_coverage, precision),
+            x -> mean_moment_jacobian(x, q, Cp, C, S, obs_index, complete_coverage, precision; Mweights=Mweights),
             guess;
             analytic_options...,
         )
@@ -56,8 +57,12 @@ function estimate_giv(
         nlsolve(fmom, guess; solver_options...)
     end
 
-    converged = res.f_converged
     ζ̂ = res.zero
+    converged = res.f_converged
+    if complete_coverage && !aggregate_elasticity_in_domain(ζ̂, C, S, obs_index)
+        converged = false
+        !quiet && @warn "The reported root has nonpositive or near-zero aggregate elasticity under complete coverage."
+    end
 
     if !converged && !quiet
         @warn "The estimation did not converge."
@@ -66,7 +71,7 @@ function estimate_giv(
     return ζ̂, converged
 end
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing)
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
 
@@ -154,8 +159,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
-    if complete_coverage
-        err .*= period_mweights(ζ, C, S, obs_index)'
+    period_weights = resolve_period_mweights(ζ, C, S, obs_index, complete_coverage, precision, Mweights)
+    if !isnothing(period_weights)
+        err .*= period_weights'
         # weightsum is left unscaled
     end
 
@@ -169,7 +175,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing)
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing)
 
     Nm = length(ζ)
     N, T = obs_index.N, obs_index.T
@@ -197,8 +203,9 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
-    if complete_coverage
-        err .*= period_mweights(ζ, C, S, obs_index)'
+    period_weights = resolve_period_mweights(ζ, C, S, obs_index, complete_coverage, precision, Mweights)
+    if !isnothing(period_weights)
+        err .*= period_weights'
         # weightsum is left unscaled
     end
 
@@ -383,7 +390,7 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadin
 end
 
 
-function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing)
+function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing)
     if n_pcs > 0
         throw(ArgumentError("PC extraction (n_pcs > 0) is not yet supported for the :debiased_ols algorithm. Use :iv_twopass instead."))
     end
@@ -404,7 +411,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     weightsum = zeros(eltype(ζ), Nmom, T)
 
     # Calculate ζS for each time period
-    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
+    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
 
     # Loop through time periods
     @threads for t in 1:T
@@ -442,14 +449,14 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
-mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing) =
-    vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option; precision=precision); dims=2))
+mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing) =
+    vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option; precision=precision, Mweights=Mweights); dims=2))
 
 # ----------------------------------------------------------------------
 #  ANALYTIC JACOBIAN — fixed-precision moment kernel
 # ----------------------------------------------------------------------
 """
-    mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision)
+    mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision; Mweights=nothing)
 
 Exact Jacobian `J[m, k] = ∂gₘ/∂ζₖ` of the fixed-precision mean moment map
 (`mean_moment_conditions` under `:iv`/`:iv_twopass` with `precision !== nothing`).
@@ -459,17 +466,15 @@ in ζ, so `∂(uᵢuⱼ)/∂ζₖ = Cpᵢₖ uⱼ + uᵢ Cpⱼₖ` and the Jacob
 pair-sum structure as the moments: the O(N) fast-pass identity applies verbatim
 (products of per-period aggregates), followed by the excluded-pair deduction.
 The per-moment normalization `momweight` depends only on `(precision, C, S)`,
-so it is a constant row scaling. Under complete coverage the period weights
-`Mweights_t(ζ) ∝ 1/clamp(|ζS_t|, √eps, Inf)` add a closed-form product-rule
-term: `ζS_t` is linear in ζ (gradient `Σ_{i∈t} Sᵢ Cᵢₖ`), clamped periods have
-zero derivative, and the sum-to-one normalization contributes the quotient-rule
-correction.
+so it is a constant row scaling. Optional frozen `Mweights` scale each period's
+Jacobian contribution but are constant with respect to the current `ζ`, so no
+period-weight product-rule term enters the fixed-weight Jacobian.
 
 Not valid for CUE (`precision === nothing`) or internal PC extraction inside
 the kernel (`n_pcs > 0` with ζ-dependent loadings) — there the weights/loadings
 move with ζ and the solver keeps the autodiff/FD path.
 """
-function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision)
+function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision; Mweights=nothing)
     isnothing(precision) &&
         throw(ArgumentError("mean_moment_jacobian requires fixed precisions; CUE (`precision === nothing`) has no closed-form Jacobian here."))
     prec = precision
@@ -479,8 +484,7 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
     TT = eltype(u)
     loadings = Matrix{TT}(undef, obs_index.N, 0)
 
-    # Raw moment levels and weightsum: weightsum fixes the (constant) momweight row
-    # scaling; the levels feed the Mweights product-rule term under complete coverage.
+    # Raw moment levels and weightsum: weightsum fixes the constant row scaling.
     err = zeros(TT, Nm, T)
     weightsum = zeros(TT, Nm, T)
     fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings, 0)
@@ -539,27 +543,11 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
     momweight ./= sum(momweight)
 
     J = zeros(TT, Nm, Nm)
-    if complete_coverage
-        # Mweights product rule: MW_t = ω_t/Ω with ω_t = 1/clamp(|ζS_t|, √eps, Inf),
-        # ∂ω_t/∂ζₖ = −sign(ζS_t) ω_t² ∂ζS_t/∂ζₖ off the clamp (0 on it), and
-        # ∂MW_t/∂ζₖ = (∂ω_t/∂ζₖ − MW_t Σ_s ∂ω_s/∂ζₖ)/Ω.
-        ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
-        lo = sqrt(eps(eltype(ζS)))
-        ω = 1 ./ clamp.(abs.(ζS), lo, Inf)
-        Ω = sum(ω)
-        MW = ω ./ Ω
-        G = zeros(TT, T, Nm)   # G[t, k] = ∂ζS_t/∂ζₖ = Σ_{i∈t} Sᵢ Cᵢₖ
-        @views for t in 1:T
-            r = obs_index.start_indices[t]:obs_index.end_indices[t]
-            G[t, :] .= C[r, :]' * S[r]
-        end
-        dωdζS = [abs(ζS[t]) > lo ? -sign(ζS[t]) * ω[t]^2 : zero(TT) for t in 1:T]
-        dω = dωdζS .* G                       # T × Nm
-        dMW = (dω .- MW * sum(dω; dims=1)) ./ Ω  # T × Nm
+    if !isnothing(Mweights)
         for k in 1:Nm, m in 1:Nm
             acc = zero(TT)
             for t in 1:T
-                acc += MW[t] * Jt[m, k, t] + dMW[t, k] * err[m, t]
+                acc += Mweights[t] * Jt[m, k, t]
             end
             J[m, k] = acc / (T * momweight[m])
         end
@@ -571,7 +559,7 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
     return J
 end
 
-function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
+function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage::Bool)
     Nmom = length(ζ)
     ζSvec = zeros(eltype(ζ), obs_index.T)
 
@@ -597,17 +585,25 @@ so the vcov `W` carries exactly the period scaling of the moments actually solve
 estimator, unlike the `momweight` row scaling, which cancels in the sandwich).
 """
 function period_mweights(ζ, C, S, obs_index)
-    ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
+    ζS = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
     Mweights ./= sum(Mweights)
     return Mweights
+end
+
+resolve_period_mweights(ζ, C, S, obs_index, complete_coverage, precision, Mweights) =
+    !complete_coverage ? nothing : isnothing(precision) ? period_mweights(ζ, C, S, obs_index) : Mweights
+
+function aggregate_elasticity_in_domain(ζ, C, S, obs_index)
+    ζS = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
+    return all(>(sqrt(eps(eltype(ζS)))), ζS)
 end
 
 function solve_optimal_vcov(ζ, u, S, C, obs_index)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
-    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index)
+    ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Mvec = 1 ./ ζSvec
 
     # Step 1: Efficiently identify all unique entity pairs that co-occur
