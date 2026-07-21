@@ -84,6 +84,15 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
     or an entity-length vector of custom fixed precisions in sorted entity order.
     Omitting the keyword selects `:twostep` and emits a one-time notice unless
     `quiet = true`.
+- `pin_zero::Vector{String} = String[]`: Exact endogenous coefficient names (as in
+    `endog_coefnames`) to fix at zero, dropping their moment conditions so the reduced
+    system stays exactly identified. Intended for a category whose flow is deterministic
+    by assumption (e.g. a scheduled-purchase entity): its elasticity is not identified
+    and its residual variance is (near) zero, so its precision weight would be unbounded.
+    Pinned entities remain in the panel (market clearing and coverage are unaffected);
+    pinned coefficients are reported as exact zeros with zero variance. Not supported
+    with `algorithm = :scalar_search`. With `:cue` under complete coverage, standard
+    errors fall back to the general sandwich on the reduced system.
 - `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca().
     Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
@@ -121,6 +130,7 @@ function giv(
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
     pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
     precision_weights=nothing,  # omission sentinel; resolves to :twostep
+    pin_zero=String[],
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -164,11 +174,28 @@ function giv(
     precisionvec = algorithm == :scalar_search ? nothing :
                    resolve_precision(precision_weights, uq, obs_index)
 
+    # Pin selected endogenous coefficients at exactly zero and drop their moment
+    # conditions (opt-in via `pin_zero`; empty by default, in which case the full
+    # matrices pass through unchanged). The reduced system is solved; pinned slots are
+    # re-inserted as exact zeros afterwards.
+    pin_idx = pin_zero_indices(pin_zero, endog_coefnames)
+    if !isempty(pin_idx) && algorithm == :scalar_search
+        throw(ArgumentError("`pin_zero` is not supported with `algorithm = :scalar_search`."))
+    end
+    keep_idx = setdiff(1:Nζ, pin_idx)
+    C_free = isempty(pin_idx) ? C : C[:, keep_idx]
+    uCp_free = isempty(pin_idx) ? uCp : uCp[:, keep_idx]
+
     guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
+    if !isempty(pin_idx) && guessvec isa AbstractVector
+        length(guessvec) ∈ (Nζ, length(keep_idx)) || throw(ArgumentError(
+            "with `pin_zero`, `guess` must have length $(Nζ) (full) or $(length(keep_idx)) (free coefficients only)."))
+        guessvec = length(guessvec) == Nζ ? guessvec[keep_idx] : guessvec
+    end
     ζ̂, converged = estimate_giv(
         uq,
-        uCp,
-        C,
+        uCp_free,
+        C_free,
         S,
         obs_index,
         Val{algorithm}();
@@ -190,11 +217,11 @@ function giv(
     # iteration re-imports the CUE self-weighting instability.
     if precision_weights === :twostep && algorithm != :scalar_search
         if converged
-            precisionvec = 1 ./ calculate_entity_variance(uq + uCp * ζ̂, obs_index)
+            precisionvec = 1 ./ calculate_entity_variance(uq + uCp_free * ζ̂, obs_index)
             ζ̂, converged2 = estimate_giv(
                 uq,
-                uCp,
-                C,
+                uCp_free,
+                C_free,
                 S,
                 obs_index,
                 Val{algorithm}();
@@ -211,6 +238,9 @@ function giv(
             @warn "Two-step step 1 (:raw_onestep) did not converge; skipping step 2 and returning the non-converged step-1 estimates."
         end
     end
+    # Re-insert pinned coefficients as exact zeros; downstream objects (elasticities,
+    # residuals, coefdf) then use the full-length coefficient vector unchanged.
+    ζ̂ = isempty(pin_idx) ? ζ̂ : expand_pinned(ζ̂, keep_idx, Nζ)
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
     β = β_q + β_Cp * ζ̂
@@ -221,12 +251,12 @@ function giv(
         # `solve_optimal_vcov` only when the weights are exact CUE
         # (`precision_weights = :cue`) AND coverage is complete.
         if isnothing(precisionvec)
-            if complete_coverage
+            if complete_coverage && isempty(pin_idx)
                 σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
             else
                 # without complete coverage of the market, we do not have aggregate elasticity
                 # and hence it's not exactly optimal
-                σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
+                σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index)
             end
         else
             # Fixed-weight mode: SEs use the same fixed weights as the moments
@@ -235,8 +265,9 @@ function giv(
             # carry the same Mweights evaluated at the solution into the sandwich `W`.
             Mw = complete_coverage && algorithm in (:iv, :iv_twopass) ?
                  period_mweights(ζ̂, C, S, obs_index) : nothing
-            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index; precision=precisionvec, Mweights=Mw)
+            σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index; precision=precisionvec, Mweights=Mw)
         end
+        Σζ = isempty(pin_idx) ? Σζ : expand_pinned_vcov(Σζ, keep_idx, Nζ)
         if size(X_feres, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
             Σβ = ols_vcov + β_Cp * Σζ * β_Cp'
@@ -272,7 +303,7 @@ function giv(
         pc_loadings = projection(pc_model) # important: save the projection so that projection x factors = predicted values; loading(pc_model) will include the factor vol as well. 
     end
 
-    dof = length(ζ̂) + length(β)
+    dof = length(ζ̂) - length(pin_idx) + length(β)
     dof_residual = nrow(df) - dof
 
     if save == :residuals || save == :all
@@ -402,6 +433,42 @@ function resolve_precision(precision_weights, uq, obs_index)
     else
         throw(ArgumentError("Unknown precision_weights = $(precision_weights); use :twostep, :raw_onestep, :cue, or an entity-length vector."))
     end
+end
+
+"""
+    pin_zero_indices(pin_zero, endog_coefnames)
+
+Validate `pin_zero` (exact endogenous coefficient names) and return their sorted,
+unique indices in `endog_coefnames`. Empty input returns an empty index vector.
+"""
+function pin_zero_indices(pin_zero, endog_coefnames)
+    isempty(pin_zero) && return Int[]
+    idx = Int[]
+    for name in pin_zero
+        i = findfirst(==(String(name)), endog_coefnames)
+        isnothing(i) && throw(ArgumentError(
+            "`pin_zero` entry \"$name\" does not match any endogenous coefficient name; " *
+            "available: $(join(endog_coefnames, ", "))"))
+        push!(idx, i)
+    end
+    idx = sort!(unique(idx))
+    length(idx) < length(endog_coefnames) ||
+        throw(ArgumentError("`pin_zero` cannot pin every endogenous coefficient."))
+    return idx
+end
+
+"Expand a free-coefficient vector to full length with exact zeros at pinned slots."
+function expand_pinned(ζfree, keep_idx, Nζ)
+    ζ = zeros(eltype(ζfree), Nζ)
+    ζ[keep_idx] = ζfree
+    return ζ
+end
+
+"Expand a free-coefficient covariance to full size with zero rows/columns at pinned slots."
+function expand_pinned_vcov(Σfree, keep_idx, Nζ)
+    Σ = zeros(eltype(Σfree), Nζ, Nζ)
+    Σ[keep_idx, keep_idx] = Σfree
+    return Σ
 end
 
 # One-time migration warning for calls that omit `precision_weights`. The flag
@@ -622,6 +689,7 @@ function build_error_function(df,
     tol=1e-6,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     precision_weights=:twostep,
+    pin_zero=String[],
     kwargs...
 )
     haskey(kwargs, :precision_mode) &&
@@ -676,11 +744,19 @@ function build_error_function(df,
         # Call the original implementation with reshaped matrices
         p, S_vec, coefmapping = transform_matricies_for_scalar_search(uCpts, Cts, Smat)
 
+        isempty(pin_zero) ||
+            throw(ArgumentError("`pin_zero` is not supported with `algorithm = :scalar_search`."))
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
         # :twostep resolves to the step-1 raw weights here (no solve loop in this export).
         precisionvec = resolve_precision(precision_weights, uq, obs_index)
+        # `pin_zero` (see `giv`): drop the pinned coefficients' columns and moment rows;
+        # the exported map then takes and returns free-coefficient vectors only.
+        pin_idx = pin_zero_indices(pin_zero, endog_coefnames)
+        keep_idx = setdiff(1:size(C, 2), pin_idx)
+        C = isempty(pin_idx) ? C : C[:, keep_idx]
+        uCp = isempty(pin_idx) ? uCp : uCp[:, keep_idx]
         err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option; precision=precisionvec)
         # Exact Jacobian of the exported moment map, when defined (fixed precisions,
         # `:iv`/`:iv_twopass`, no internal PCs); `nothing` otherwise.
