@@ -81,9 +81,12 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
     `method` and derivative controls such as `autodiff`. The exact analytic Jacobian is
     selected automatically for fixed-precision `:iv`/`:iv_twopass` solves without
     internal PCs; `autodiff` is used only on fallback paths where NLsolve constructs the
-    Jacobian itself. Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
+    Jacobian itself. In NLsolve's API, `autodiff = :central` means central finite
+    differences, while `autodiff = :forward` uses ForwardDiff. Default is
+    `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
 - `precision_weights = :twostep`: Entity precision-weighting scheme. (`:scalar_search`
-    ignores precision weighting.)
+    ignores precision weighting.) Omitting this keyword selects `:twostep` and emits a
+    one-time notice unless `quiet = true`; passing it explicitly acknowledges the choice.
     - `:twostep` (package default): two-step efficient GMM. Step 1 solves with the
       `:raw_onestep` weights; step 2 recomputes the precisions `1/var(ûᵢ)` from the step-1
       residuals and re-solves once with those fixed weights, warm-started at the step-1
@@ -125,7 +128,6 @@ The output is `m::GIVModel`. Several important fields are:
   - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
 
 """
-
 
 """
     resolve_precision(precision_weights, uq, obs_index)
@@ -446,6 +448,21 @@ function giv(
     )
 end
 
+@doc """
+    giv(df, formula, id, t, weight; <keyword arguments>)
+
+Estimate a GIV model. The `precision_weights` keyword accepts `:twostep` (the
+default), `:raw_onestep`, `:cue`, or an entity-length vector of fixed precisions.
+Omitting the keyword selects `:twostep` and emits a one-time notice unless
+`quiet = true`.
+
+Pass NLsolve-specific controls such as `method` and `autodiff` through
+`solver_options`. The exact analytic Jacobian is selected automatically for
+fixed-precision `:iv`/`:iv_twopass` solves without internal PCs. On fallback
+paths, NLsolve's `autodiff = :central` means central finite differences, while
+`:forward` uses ForwardDiff.
+""" giv
+
 """
     get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
 
@@ -629,11 +646,10 @@ end
 
 Export the error function for the GIV model. This function is useful for debugging and customized solvers.
 
-`precision_weights = :twostep` is the package default. Here it means the
-**step-1 raw weights** `1/var(uqᵢ)` — the export has no solve
-loop, so the returned function is the step-1 (fixed-quadratic) moment map. Pass
-`precision_weights = :cue` for the continuously-updated map, or an entity-length
-vector of step-1-residual precisions for the step-2 map.
+For `build_error_function`, the default `precision_weights = :twostep` returns the
+step-1 `:raw_onestep` moment map with precisions `1/var(uqᵢ)`, because this helper
+does not run the second solve. Pass `precision_weights = :cue` for the continuously
+updated map or an entity-length vector for a custom fixed map.
 
 When the exported map has an exact closed-form Jacobian (fixed precisions,
 algorithm `:iv`/`:iv_twopass`, no internal PCs), the returned NamedTuple carries it

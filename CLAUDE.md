@@ -50,7 +50,8 @@ using OptimalGIV
 # Quick test with simulated data
 df = simulate_data((; M = 0.5, N = 10), Nsims = 1, seed = 1)[1]
 model = giv(df, @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)), 
-            :id, :t, :S; algorithm = :iv, guess = ones(10) * 2.0)
+            :id, :t, :S; algorithm = :iv, precision_weights = :twostep,
+            guess = ones(10) * 2.0)
 ```
 
 ## Code Architecture
@@ -99,9 +100,15 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 ### Critical Implementation Details
 
 #### Initial Guess Requirements
-- Under the default `precision_mode = :twostep` (fixed weights), the default OLS guess is usually adequate; under `:cue`, never rely on it — provide a good initial guess
+- Under the default `precision_weights = :twostep`, the default OLS guess is usually adequate; under `precision_weights = :cue`, provide a good initial guess
 - Accept: scalar, vector, or Dict mapping coefficient names to values
 - For `:scalar_search`: Dict with "Aggregate" key
+
+#### Solver Configuration
+- Use `solver_options` for NLsolve-specific controls such as `method` and `autodiff`; do not add top-level solver keywords
+- The analytic Jacobian is selected automatically for fixed-precision `:iv`/`:iv_twopass` solves without internal PCs
+- NLsolve's `autodiff = :central` means central finite differences; `:forward` uses ForwardDiff
+- Internal-PC specifications use the built-in one-pass solve; there is no public PC-solver selector
 
 #### Panel Data Handling
 - Unbalanced panels supported for `:iv` algorithms
@@ -125,7 +132,7 @@ Tests are organized by functionality:
 
 ## Common Pitfalls
 
-1. **Convergence Issues**: Provide good initial guesses, especially under `precision_mode = :cue`
+1. **Convergence Issues**: Provide good initial guesses, especially under `precision_weights = :cue`
 2. **Coverage Assumptions**: Check `model.complete_coverage` before using `:debiased_ols`
 3. **Missing Data**: Package doesn't handle missing values - clean data first
 4. **Memory Usage**: Large panels with entity interactions can be memory-intensive

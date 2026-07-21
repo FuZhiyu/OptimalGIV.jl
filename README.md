@@ -43,6 +43,15 @@ Pkg.add("OptimalGIV")
 
 ## Usage
 
+> [!IMPORTANT]
+> **Default weighting changed:** OptimalGIV now uses `precision_weights = :twostep`
+> by default. Two-step weighting is more stable with generic starting values while
+> retaining CUE-like efficiency, but estimates and standard errors may differ slightly
+> from results under the former CUE default. Omitting `precision_weights` selects
+> `:twostep` and emits a one-time notice unless `quiet = true`; pass
+> `precision_weights = :twostep` explicitly to acknowledge the new default, or
+> `precision_weights = :cue` to reproduce the former weighting scheme.
+
 ### Basic Example
 
 ```julia
@@ -56,6 +65,7 @@ model = giv(df,
     @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)), 
     :id, :t, :S;
     algorithm = :iv, 
+    precision_weights = :twostep,
     save = :all, # fixed effects will also be saved in the coefdf
     guess = ones(10) * 2.0
 )
@@ -126,7 +136,7 @@ giv(df, formula, id, t, weight; kwargs...)
 
 #### Keyword Arguments:
 - `algorithm`: `:iv` (default), `:debiased_ols`, `:scalar_search`, or `:iv_twopass`
-- `precision_mode`: Entity precision-weighting scheme — `:twostep` (default), `:cue`, `:proxy`, or `:fixed`. See [Precision Weighting](#precision-weighting-and-the-two-step-default) below.
+- `precision_weights`: Entity precision weighting — `:twostep` (default), `:raw_onestep`, `:cue`, or an entity-length vector. See [Precision Weighting](#precision-weighting-and-the-two-step-default) below.
 - `guess`: Initial parameter guess (vector, number, or Dict)
 - `exclude_pairs`: Dictionary specifying entity pairs to exclude from moment conditions. 
   Example: `Dict(1 => [2, 3], 4 => [5])` excludes pairs (1,2), (1,3), and (4,5)
@@ -138,7 +148,7 @@ giv(df, formula, id, t, weight; kwargs...)
 - `contrasts`: Contrasts specification for categorical variables (following StatsModels.jl). Untested. Use with cautions.
 - `tol`: Convergence tolerance (default: 1e-6)
 - `iterations`: Maximum iterations (default: 100)
-- `solver_options`: Options for the nonlinear solvers from `NLsolve.jl`
+- `solver_options`: Options passed to `NLsolve.jl`, including `method`, tolerances, and derivative controls such as `autodiff`
 - `pca_option`: Options for HeteroPCA.jl PC extraction (default: `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`) 
 
 ### Working with Results
@@ -251,14 +261,49 @@ Efficient algorithm when the aggregate elasticity is constant across time. Searc
 
 ## Precision Weighting and the Two-Step Default
 
-The moment conditions weight each entity by a precision `1/σᵢ²`. The `precision_mode` keyword controls how these precisions are computed:
+The moment conditions weight each entity by a precision `1/σᵢ²`. The single
+`precision_weights` keyword selects the weighting rule:
 
-- **`:twostep` (the default)**: two-step efficient GMM. Step 1 solves with fixed data-based precisions `1/var(uqᵢ)` computed from the FE/control-residualized flows (`:proxy` weights); step 2 recomputes the precisions `1/var(ûᵢ)` from the step-1 residuals and re-solves once with those fixed weights, warm-started at the step-1 root. Reported estimates and standard errors come from step 2, and `model.converged` requires both steps to converge. In simulations the two-step matches CUE's bias, dispersion, and SE calibration while keeping the fixed-weight mode's robustness to generic initial guesses. The two-step is the standard efficient-GMM truncation: iterating it further would converge to a CUE root (the system is exactly identified), but iteration is deliberately not pursued because it re-imports the CUE self-weighting instability.
-- **`:cue`**: continuously-updated GMM weights `1/σᵢ²(ζ)`, recomputed at every solver evaluation. This was the package default before v0.3.0; pin `precision_mode = :cue` to reproduce previous results exactly.
-- **`:proxy`**: the fixed step-1 weights only (`1/var(uqᵢ)`). Under incomplete coverage the moment map becomes an exact quadratic in ζ, which makes the solve very robust to initial guesses.
-- **`:fixed`**: user-supplied precisions via `precision_weights` (length-N vector in sorted entity order).
+- **`:twostep` (default):** Step 1 solves with fixed precisions `1/var(uqᵢ)`
+  computed from the FE/control-residualized flows. Step 2 computes
+  `1/var(ûᵢ)` from the step-1 residuals and re-solves once with those precisions
+  held fixed. Estimates and standard errors come from step 2, and
+  `model.converged` requires both solves to converge.
+- **`:raw_onestep`:** Run only the first step, using the fixed
+  `1/var(uqᵢ)` precisions. Under incomplete coverage, this gives an exact
+  quadratic moment map and is robust to generic starting values.
+- **`:cue`:** Recompute the continuously updated precisions `1/σᵢ²(ζ)` at every
+  solver evaluation. Use this option to reproduce the package's former weighting
+  scheme.
+- **An entity-length vector:** Use the supplied vector as fixed precisions, ordered
+  by sorted entity identifier.
 
-**Behavior change (v0.3.0):** the default estimator changed from `:cue` to `:twostep`. Calls that do not pass `precision_mode` explicitly get `:twostep` and a one-time warning per session; pass any `precision_mode` explicitly (or set `quiet = true`) to silence it. `:scalar_search` ignores precision weighting and is unaffected.
+For example:
+
+```julia
+giv(df, formula, id, t, weight; precision_weights = :twostep)
+giv(df, formula, id, t, weight; precision_weights = :raw_onestep)
+giv(df, formula, id, t, weight; precision_weights = :cue)
+giv(df, formula, id, t, weight; precision_weights = my_precision_vector)
+```
+
+The `:scalar_search` algorithm ignores precision weighting.
+
+## Solver Options and Jacobians
+
+Pass NLsolve-specific controls such as `method` and `autodiff` through
+`solver_options`:
+
+```julia
+giv(df, formula, id, t, weight;
+    solver_options = (; method = :trust_region, autodiff = :central))
+```
+
+In NLsolve's API, `autodiff = :central` means central finite differences, not
+automatic differentiation; `autodiff = :forward` uses ForwardDiff. OptimalGIV
+automatically supplies its exact analytic Jacobian for fixed-precision `:iv` and
+`:iv_twopass` solves without internal PCs. The `autodiff` option is used only on
+fallback paths where NLsolve constructs the Jacobian.
 
 ## Internal PCA
 
@@ -270,9 +315,12 @@ Internal PC extractions are supported. With internal PCs, the moment conditions 
 
 - A model with fully flexible elasticity specification and fully flexible internal factor loadings is not theoretically identifiable. Hence, one needs to assume certain level of homogeneity to estimate factors internally. 
 
+Internal-PC specifications use the built-in one-pass solve; the package does not
+expose a separate PC-solver selector.
+
 ## Initial Guesses
 
-If an initial guess is not provided, the algorithm uses the OLS estimates as the initial guess. Under the default `:twostep` estimator (fixed precision weights in each step) this is usually adequate: the solve is robust to generic starting points. Under `precision_mode = :cue`, however, a good initial guess remains key to stable estimates — the OLS default rarely works well there.
+If an initial guess is not provided, the algorithm uses the OLS estimates as the initial guess. Under the default `precision_weights = :twostep` estimator, this is usually adequate because both solves hold their precision weights fixed. Under `precision_weights = :cue`, however, a good initial guess remains important for stable estimates.
 
 Initial parameter guesses can be provided in several formats:
 
