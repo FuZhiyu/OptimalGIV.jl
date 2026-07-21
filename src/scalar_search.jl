@@ -29,6 +29,7 @@ function estimate_giv(
     precision=nothing,  # fixed-weight modes are not applicable to :scalar_search; absorb & ignore
     method=:trust_region,
     autodiff=:central,
+    jacobian=:analytic,  # analytic Jacobian is not applicable to :scalar_search; absorb & ignore
     kwargs...,
 )
     tol = solver_options.ftol

@@ -9,6 +9,7 @@ tests = [
     "test_ols_step.jl",
     "test_algorithm_equivalence.jl",
     "test_fixed_weight_mode.jl",
+    "test_analytic_jacobian.jl",
     "test_nonfinite_guards.jl",
     # "test_with_simulations.jl"  # slow; not run in CI
 ]

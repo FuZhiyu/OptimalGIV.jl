@@ -14,6 +14,7 @@ function estimate_giv(
     precision=nothing,
     method=:trust_region,
     autodiff=:central,
+    jacobian=:analytic,
 ) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -22,8 +23,12 @@ function estimate_giv(
         guess = (Cp' * Cp) \ (Cp' * q)
     end
 
+    jacobian in (:analytic, :autodiff) ||
+        throw(ArgumentError("Unknown jacobian = $(jacobian); use :analytic or :autodiff."))
+
     Nmom = size(Cp, 2)
-    err0 = mean_moment_conditions(guess, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision)
+    fmom = x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision)
+    err0 = fmom(guess)
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
@@ -36,13 +41,24 @@ function estimate_giv(
         throw(diagnose_nonfinite_at_guess(guess, q, Cp, C, S, obs_index; precision=precision))
     end
 
-    res = nlsolve(
-        x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision),
-        guess;
-        method=method,
-        autodiff=autodiff,
-        solver_options...,
-    )
+    # Analytic Jacobian: exact for the fixed-precision `:iv`/`:iv_twopass` kernels
+    # (`:proxy`/`:fixed` and both `:twostep` steps), where residuals are linear in
+    # ζ and momweight is constant. CUE (`precision === nothing`), internal PCs
+    # (loadings move with ζ), and `:debiased_ols` keep the autodiff/FD path.
+    # `jacobian = :autodiff` is the escape hatch back to FD/ForwardDiff everywhere.
+    use_analytic = jacobian == :analytic && !isnothing(precision) && n_pcs == 0 &&
+                   A <: Union{Val{:iv},Val{:iv_twopass}}
+    res = if use_analytic
+        nlsolve(
+            fmom,
+            x -> mean_moment_jacobian(x, q, Cp, C, S, obs_index, complete_coverage, precision),
+            guess;
+            method=method,
+            solver_options...,
+        )
+    else
+        nlsolve(fmom, guess; method=method, autodiff=autodiff, solver_options...)
+    end
 
     converged = res.f_converged
     ζ̂ = res.zero
@@ -432,6 +448,141 @@ end
 
 mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing) =
     vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option; precision=precision); dims=2))
+
+# ----------------------------------------------------------------------
+#  ANALYTIC JACOBIAN — fixed-precision (:proxy/:fixed/:twostep) moment kernel
+# ----------------------------------------------------------------------
+"""
+    mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision;
+                         loadings_matrix=nothing)
+
+Exact Jacobian `J[m, k] = ∂gₘ/∂ζₖ` of the fixed-precision mean moment map
+(`mean_moment_conditions` under `:iv`/`:iv_twopass` with `precision !== nothing`).
+
+With the entity precisions held fixed, the residuals `u = q + Cp ζ` are linear
+in ζ, so `∂(uᵢuⱼ)/∂ζₖ = Cpᵢₖ uⱼ + uᵢ Cpⱼₖ` and the Jacobian has the same
+pair-sum structure as the moments: the O(N) fast-pass identity applies verbatim
+(products of per-period aggregates), followed by the excluded-pair deduction.
+The per-moment normalization `momweight` depends only on `(precision, C, S)`,
+so it is a constant row scaling. Under complete coverage the period weights
+`Mweights_t(ζ) ∝ 1/clamp(|ζS_t|, √eps, Inf)` add a closed-form product-rule
+term: `ζS_t` is linear in ζ (gradient `Σ_{i∈t} Sᵢ Cᵢₖ`), clamped periods have
+zero derivative, and the sum-to-one normalization contributes the quotient-rule
+correction.
+
+`loadings_matrix` (`N × k`, optional) supplies a **constant** factor-loading
+offset: the expected covariance `λᵢ'λⱼ` deducted from the pair moments, as in
+the nested-PC inner solve where loadings are held fixed. Being constant in ζ it
+enters the Jacobian only through the moment *levels* in the Mweights
+product-rule term (the pair-derivative term is unaffected).
+
+Not valid for CUE (`precision === nothing`) or internal PC extraction inside
+the kernel (`n_pcs > 0` with ζ-dependent loadings) — there the weights/loadings
+move with ζ and the solver keeps the autodiff/FD path.
+"""
+function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision;
+    loadings_matrix=nothing)
+    isnothing(precision) &&
+        throw(ArgumentError("mean_moment_jacobian requires fixed precisions; CUE (`precision === nothing`) has no closed-form Jacobian here."))
+    prec = precision
+    Nm = length(ζ)
+    T = obs_index.T
+    u = q .+ Cp * ζ
+    TT = eltype(u)
+    n_load = isnothing(loadings_matrix) ? 0 : size(loadings_matrix, 2)
+    loadings = isnothing(loadings_matrix) ? Matrix{TT}(undef, obs_index.N, 0) : loadings_matrix
+
+    # Raw moment levels and weightsum: weightsum fixes the (constant) momweight row
+    # scaling; the levels feed the Mweights product-rule term under complete coverage.
+    err = zeros(TT, Nm, T)
+    weightsum = zeros(TT, Nm, T)
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings, n_load)
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings, n_load)
+
+    has_excl = any(obs_index.exclpairs)
+
+    # ∂err[m,t]/∂ζₖ by the same O(N) identity as the moments (vᵏ = Cp[:, k], wᵢ = Cᵢₘ precᵢ):
+    #   Σ_{i≠j} wᵢ (vᵢᵏ uⱼ + uᵢ vⱼᵏ) Sⱼ
+    #     = (Σᵢ wᵢvᵢᵏ)(Σⱼ Sⱼuⱼ) + (Σᵢ wᵢuᵢ)(Σⱼ Sⱼvⱼᵏ) − 2 Σᵢ wᵢSᵢuᵢvᵢᵏ
+    Jt = zeros(TT, Nm, Nm, T)
+    @threads for t in 1:T
+        r = obs_index.start_indices[t]:obs_index.end_indices[t]
+        ids_t = obs_index.ids[r]
+        u_t = view(u, r)
+        S_t = view(S, r)
+        Cp_t = view(Cp, r, :)
+        prec_t = prec[ids_t]
+        bu = dot(S_t, u_t)
+        bv = Cp_t' * S_t
+
+        for m in 1:Nm
+            C_tm = view(C, r, m)
+            nz = findall(!iszero, C_tm)
+            isempty(nz) && continue
+            w = C_tm[nz] .* prec_t[nz]
+            u_nz = u_t[nz]
+            wu_sum = dot(w, u_nz)
+            wSu = w .* S_t[nz] .* u_nz
+            for k in 1:Nm
+                v_nz = view(Cp_t, nz, k)
+                Jt[m, k, t] = dot(w, v_nz) * bu + wu_sum * bv[k] - 2 * dot(wSu, v_nz)
+            end
+        end
+
+        # deduct excluded pairs (both orderings of each pair, as in the moments)
+        if has_excl
+            for idx_i in r
+                i = obs_index.ids[idx_i]
+                for idx_j in (idx_i+1):last(r)
+                    j = obs_index.ids[idx_j]
+                    obs_index.exclpairs[i, j] || continue
+                    for m in 1:Nm
+                        cw = C[idx_i, m] * prec[i] * S[idx_j] + C[idx_j, m] * prec[j] * S[idx_i]
+                        iszero(cw) && continue
+                        for k in 1:Nm
+                            Jt[m, k, t] -= cw * (Cp[idx_i, k] * u[idx_j] + u[idx_i] * Cp[idx_j, k])
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    momweight = vec(sum(abs.(weightsum); dims=2))
+    momweight ./= sum(momweight)
+
+    J = zeros(TT, Nm, Nm)
+    if complete_coverage
+        # Mweights product rule: MW_t = ω_t/Ω with ω_t = 1/clamp(|ζS_t|, √eps, Inf),
+        # ∂ω_t/∂ζₖ = −sign(ζS_t) ω_t² ∂ζS_t/∂ζₖ off the clamp (0 on it), and
+        # ∂MW_t/∂ζₖ = (∂ω_t/∂ζₖ − MW_t Σ_s ∂ω_s/∂ζₖ)/Ω.
+        ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
+        lo = sqrt(eps(eltype(ζS)))
+        ω = 1 ./ clamp.(abs.(ζS), lo, Inf)
+        Ω = sum(ω)
+        MW = ω ./ Ω
+        G = zeros(TT, T, Nm)   # G[t, k] = ∂ζS_t/∂ζₖ = Σ_{i∈t} Sᵢ Cᵢₖ
+        @views for t in 1:T
+            r = obs_index.start_indices[t]:obs_index.end_indices[t]
+            G[t, :] .= C[r, :]' * S[r]
+        end
+        dωdζS = [abs(ζS[t]) > lo ? -sign(ζS[t]) * ω[t]^2 : zero(TT) for t in 1:T]
+        dω = dωdζS .* G                       # T × Nm
+        dMW = (dω .- MW * sum(dω; dims=1)) ./ Ω  # T × Nm
+        for k in 1:Nm, m in 1:Nm
+            acc = zero(TT)
+            for t in 1:T
+                acc += MW[t] * Jt[m, k, t] + dMW[t, k] * err[m, t]
+            end
+            J[m, k] = acc / (T * momweight[m])
+        end
+    else
+        for k in 1:Nm, m in 1:Nm
+            J[m, k] = sum(view(Jt, m, k, :)) / (T * momweight[m])
+        end
+    end
+    return J
+end
 
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Nmom = length(ζ)

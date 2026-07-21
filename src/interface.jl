@@ -112,6 +112,13 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 - `method::Symbol = :trust_region`, `autodiff::Symbol = :central`: passed through to
     NLsolve.jl. `autodiff = :forward` uses ForwardDiff for the Jacobian (the moment code is
     generic in `eltype(ζ)`). Defaults are NLsolve's own defaults, so default behavior is unchanged.
+- `jacobian::Symbol = :analytic`: Jacobian supplied to the NLsolve solve. `:analytic`
+    (default) uses the exact hand-coded Jacobian of the fixed-precision moment map whenever
+    it applies — fixed precisions (`:proxy`/`:fixed` and both `:twostep` steps) with
+    algorithm `:iv`/`:iv_twopass` and no internal PCs; in every other case (CUE, internal
+    PCs, `:debiased_ols`) the solver falls back to the `autodiff` path automatically.
+    `jacobian = :autodiff` forces the finite-difference/ForwardDiff Jacobian everywhere
+    (debugging escape hatch).
 - `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
     Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
@@ -201,6 +208,7 @@ function giv(
     precision_weights=nothing,
     method=:trust_region,
     autodiff=:central,
+    jacobian=:analytic,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -266,6 +274,7 @@ function giv(
         precision=precisionvec,
         method=method,
         autodiff=autodiff,
+        jacobian=jacobian,
     )
 
     # Two-step efficient GMM (:twostep, the package default): the solve above is
@@ -294,6 +303,7 @@ function giv(
                 precision=precisionvec,
                 method=method,
                 autodiff=autodiff,
+                jacobian=jacobian,
             )
             converged = converged && converged2
         elseif !quiet
@@ -653,6 +663,12 @@ which here means the **step-1 proxy weights** `1/var(uqᵢ)` — the export has 
 loop, so the returned function is the step-1 (fixed-quadratic) moment map. Pass
 `precision_mode = :cue` for the continuously-updated map, or `:fixed` with
 step-1-residual precisions for the step-2 map.
+
+When the exported map has an exact closed-form Jacobian (fixed precisions,
+algorithm `:iv`/`:iv_twopass`, no internal PCs), the returned NamedTuple carries it
+as `jac_func` (`ζ -> Nmom×Nmom` matrix, via [`mean_moment_jacobian`](@ref)); it is
+`nothing` otherwise. Useful for root diagnostics (SVD/weak-direction analysis at ζ̂)
+without finite-differencing the moment map.
 """
 function build_error_function(df,
     formula::FormulaTerm,
@@ -730,6 +746,11 @@ function build_error_function(df,
         end
         precisionvec = resolve_precision(precision_mode, precision_weights, uq, obs_index)
         err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option; precision=precisionvec)
-        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs, precision=precisionvec)
+        # Exact Jacobian of the exported moment map, when defined (fixed precisions,
+        # `:iv`/`:iv_twopass`, no internal PCs); `nothing` otherwise.
+        jac_func = (!isnothing(precisionvec) && n_pcs == 0 && algorithm in (:iv, :iv_twopass)) ?
+                   (x -> mean_moment_jacobian(x, uq, uCp, C, S, obs_index, complete_coverage, precisionvec)) :
+                   nothing
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs, precision=precisionvec, jac_func=jac_func)
     end
 end
