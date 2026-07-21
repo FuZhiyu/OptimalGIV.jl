@@ -79,7 +79,7 @@ function run_mc()
         N = scen.params.N
         dfs = simulate_data(scen.params; Nsims=NREP, seed=42)
         methods = [
-            ("CUE",      (df, S, ta; kw...) -> one_fit(df, S, ta; kw...)),
+            ("CUE",      (df, S, ta; kw...) -> one_fit(df, S, ta; precision_mode=:cue, kw...)),
             ("proxy",    (df, S, ta; kw...) -> one_fit(df, S, ta; precision_mode=:proxy, kw...)),
             ("two-step", (df, S, ta; kw...) -> twostep_fit(df, S, ta; kw...)),
         ]
@@ -186,7 +186,7 @@ function run_cue_favorable_mc()
     @printf("contamination ζᵢ²var(p̃)/σᵤᵢ²: per-rep max mean %.2f [q10 %.2f, q90 %.2f], per-rep median mean %.2f, share>1 %.2f\n\n",
         mean(permax), quantile(permax, 0.1), quantile(permax, 0.9), mean(permed), mean(contam .> 1))
     arms = [
-        ("CUE/true",    r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA)),
+        ("CUE/true",    r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:cue)),
         ("proxy/true",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:proxy)),
         ("proxy/ones",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=ones(5), solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:proxy)),
         ("oracle/true", r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA,

@@ -43,6 +43,7 @@ df.id = CategoricalArray(df.id)
         :absS;
         guess=[1.0],
         algorithm=:iv,
+        precision_mode=:cue,  # known-answer CUE reference values
         # savedf=true,
     )
     @test coef(givmodel_uu) ≈ coef(givmodel) atol = 1e-6
@@ -55,6 +56,7 @@ df.id = CategoricalArray(df.id)
         :absS;
         guess=[1.0],
         algorithm=:debiased_ols,
+        precision_mode=:cue,  # known-answer CUE reference values
     )
     @test coef(givmodel_up) ≈ coef(givmodel) atol = 1e-6
 end
@@ -90,6 +92,7 @@ end
         :absS;
         guess=ones(5),
         algorithm=:iv,
+        precision_mode=:cue,  # known-answer CUE reference values
     )
     @test coef(givmodel_uu) ≈ coef(givmodel) atol = 1e-6
     givmodel_up = giv(
@@ -100,6 +103,7 @@ end
         :absS;
         guess=ones(5),
         algorithm=:debiased_ols,
+        precision_mode=:cue,  # known-answer CUE reference values
     )
     @test coef(givmodel_up) ≈ coef(givmodel) atol = 1e-6
 end
@@ -142,13 +146,15 @@ end
             df, f, :id, :t, :absS;
             guess=[1.0],
             algorithm=:iv,
+            precision_mode=:cue,  # pin: the error function below is the CUE moment map
             tol=1e-6
         )
 
         # Build the error function
         err_func, components = build_error_function(
             df, f, :id, :t, :absS;
-            algorithm=:iv
+            algorithm=:iv,
+            precision_mode=:cue
         )
 
         # Extract just the elasticity coefficients (not the factor loadings)
@@ -168,12 +174,14 @@ end
             df, f, :id, :t, :absS;
             guess=[1.0],
             algorithm=:debiased_ols,
+            precision_mode=:cue,  # pin: the error function below is the CUE moment map
         )
 
         # Build the error function
         err_func, components = build_error_function(
             df, f, :id, :t, :absS;
-            algorithm=:debiased_ols
+            algorithm=:debiased_ols,
+            precision_mode=:cue
         )
 
         # Extract just the elasticity coefficients
@@ -213,12 +221,14 @@ end
             df, f_het, :id, :t, :absS;
             guess=ones(5),
             algorithm=:iv,
+            precision_mode=:cue,  # pin: the error function below is the CUE moment map
             tol=1e-8,
         )
 
         err_func, components = build_error_function(
             df, f_het, :id, :t, :absS;
-            algorithm=:iv
+            algorithm=:iv,
+            precision_mode=:cue
         )
 
         # Extract elasticity coefficients (first 5 for 5 categories)
@@ -236,12 +246,14 @@ end
             df, f_het, :id, :t, :absS;
             guess=ones(5),
             algorithm=:debiased_ols,
+            precision_mode=:cue,  # pin: the error function below is the CUE moment map
             tol=1e-8,
         )
 
         err_func, components = build_error_function(
             df, f_het, :id, :t, :absS;
-            algorithm=:debiased_ols
+            algorithm=:debiased_ols,
+            precision_mode=:cue
         )
 
         ζ = endog_coef(givmodel)

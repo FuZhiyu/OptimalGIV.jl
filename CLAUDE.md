@@ -99,7 +99,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 ### Critical Implementation Details
 
 #### Initial Guess Requirements
-- **Never rely on default OLS guesses** - they rarely work
+- Under the default `precision_mode = :twostep` (fixed weights), the default OLS guess is usually adequate; under `:cue`, never rely on it — provide a good initial guess
 - Accept: scalar, vector, or Dict mapping coefficient names to values
 - For `:scalar_search`: Dict with "Aggregate" key
 
@@ -125,7 +125,7 @@ Tests are organized by functionality:
 
 ## Common Pitfalls
 
-1. **Convergence Issues**: Always provide good initial guesses
+1. **Convergence Issues**: Provide good initial guesses, especially under `precision_mode = :cue`
 2. **Coverage Assumptions**: Check `model.complete_coverage` before using `:debiased_ols`
 3. **Missing Data**: Package doesn't handle missing values - clean data first
 4. **Memory Usage**: Large panels with entity interactions can be memory-intensive

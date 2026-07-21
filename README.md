@@ -126,6 +126,7 @@ giv(df, formula, id, t, weight; kwargs...)
 
 #### Keyword Arguments:
 - `algorithm`: `:iv` (default), `:debiased_ols`, `:scalar_search`, or `:iv_twopass`
+- `precision_mode`: Entity precision-weighting scheme — `:twostep` (default), `:cue`, `:proxy`, or `:fixed`. See [Precision Weighting](#precision-weighting-and-the-two-step-default) below.
 - `guess`: Initial parameter guess (vector, number, or Dict)
 - `exclude_pairs`: Dictionary specifying entity pairs to exclude from moment conditions. 
   Example: `Dict(1 => [2, 3], 4 => [5])` excludes pairs (1,2), (1,3), and (4,5)
@@ -248,6 +249,17 @@ Efficient algorithm when the aggregate elasticity is constant across time. Searc
 - Complete market coverage
 - PC extraction: Not supported with this algorithm
 
+## Precision Weighting and the Two-Step Default
+
+The moment conditions weight each entity by a precision `1/σᵢ²`. The `precision_mode` keyword controls how these precisions are computed:
+
+- **`:twostep` (the default)**: two-step efficient GMM. Step 1 solves with fixed data-based precisions `1/var(uqᵢ)` computed from the FE/control-residualized flows (`:proxy` weights); step 2 recomputes the precisions `1/var(ûᵢ)` from the step-1 residuals and re-solves once with those fixed weights, warm-started at the step-1 root. Reported estimates and standard errors come from step 2, and `model.converged` requires both steps to converge. In simulations the two-step matches CUE's bias, dispersion, and SE calibration while keeping the fixed-weight mode's robustness to generic initial guesses. The two-step is the standard efficient-GMM truncation: iterating it further would converge to a CUE root (the system is exactly identified), but iteration is deliberately not pursued because it re-imports the CUE self-weighting instability.
+- **`:cue`**: continuously-updated GMM weights `1/σᵢ²(ζ)`, recomputed at every solver evaluation. This was the package default before v0.3.0; pin `precision_mode = :cue` to reproduce previous results exactly.
+- **`:proxy`**: the fixed step-1 weights only (`1/var(uqᵢ)`). Under incomplete coverage the moment map becomes an exact quadratic in ζ, which makes the solve very robust to initial guesses.
+- **`:fixed`**: user-supplied precisions via `precision_weights` (length-N vector in sorted entity order).
+
+**Behavior change (v0.3.0):** the default estimator changed from `:cue` to `:twostep`. Calls that do not pass `precision_mode` explicitly get `:twostep` and a one-time warning per session; pass any `precision_mode` explicitly (or set `quiet = true`) to silence it. `:scalar_search` ignores precision weighting and is unaffected.
+
 ## Internal PCA
 
 Internal PC extractions are supported. With internal PCs, the moment conditions become $\mathbb E[u_{i,t}u_{j,t}] = \Lambda \Lambda'$, where $\Lambda$ is the factor loadings estimated internally using [HeteroPCA.jl](https://github.com/FuZhiyu/HeteroPCA.jl) from $u_{i,t}(z) \equiv q_{i,t} + p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{z}$ at each guess of $z$. However, following caveats apply:
@@ -260,7 +272,7 @@ Internal PC extractions are supported. With internal PCs, the moment conditions 
 
 ## Initial Guesses
 
-A good initial guess is the key to stable estimates. If initial guess is not provided, by default the algorithm uses the OLS estimates as the initial guess, which rarely works well. 
+If an initial guess is not provided, the algorithm uses the OLS estimates as the initial guess. Under the default `:twostep` estimator (fixed precision weights in each step) this is usually adequate: the solve is robust to generic starting points. Under `precision_mode = :cue`, however, a good initial guess remains key to stable estimates — the OLS default rarely works well there.
 
 Initial parameter guesses can be provided in several formats:
 

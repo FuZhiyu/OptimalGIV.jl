@@ -310,7 +310,8 @@ end
                         Nsims=400,
                         estimate_label=method_label,
                         guess=[1.0],
-                        quiet=true;
+                        quiet=true,
+                        precision_mode=:cue;  # results below are labeled "cue"
                         method_kwargs...
                     )
 
