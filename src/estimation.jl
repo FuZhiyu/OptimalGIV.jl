@@ -27,6 +27,14 @@ function estimate_giv(
     if length(err0) != Nmom
         throw(ArgumentError("The number of moment conditions is not equal to the number of initial guess."))
     end
+    # Guard the INITIAL evaluation only: this is exactly where NLsolve would raise
+    # its opaque `IsFiniteException` (`check_isfinite` on the initial residual). We
+    # replace it with a named diagnosis and leave NLsolve's mid-solve recovery
+    # (step rejection on Inf trials, graceful non-converged return on NaN trials)
+    # untouched — no default-behavior change beyond the sanctioned error swap.
+    if any(!isfinite, err0)
+        throw(diagnose_nonfinite_at_guess(guess, q, Cp, C, S, obs_index; precision=precision))
+    end
 
     res = nlsolve(
         x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision),
@@ -193,13 +201,6 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     momweight = sum(abs.(weightsum); dims=2)
     momweight ./= sum(momweight)
     err ./= momweight
-
-    # Guard: replace NLsolve's opaque IsFiniteException with a named diagnosis of
-    # the entity/moment channel that drove the nonfinite value. Fast path (finite
-    # err) only pays one O(Nm·T) scan.
-    if any(!isfinite, err)
-        throw(diagnose_nonfinite_moment(u, prec, weightsum, obs_index))
-    end
 
     return err
 end
@@ -814,4 +815,25 @@ function diagnose_nonfinite_moment(u, prec, weightsum, obs_index)
         "entity/moment channel was isolated; inspect the panel manually.")
 
     return NonfiniteMomentError(join(lines, "\n  "))
+end
+
+"""
+    diagnose_nonfinite_at_guess(guess, q, Cp, C, S, obs_index; precision=nothing)
+
+Recompute the moment-pipeline intermediates at `guess` — residuals `u`, entity
+precision `prec` (CUE `1/σ²` unless fixed `precision` supplied), and the O(N)
+`weightsum` — and return the named `NonfiniteMomentError`. Called once by
+`estimate_giv` when the *initial* moment evaluation is nonfinite (the point at
+which NLsolve would otherwise raise its opaque `IsFiniteException`), so the cost
+is paid only on the failing solve. The `u`/`prec` channels are exact for every
+algorithm; the `weightsum` (momweight) channel uses the `:iv` O(N) form.
+"""
+function diagnose_nonfinite_at_guess(guess, q, Cp, C, S, obs_index; precision=nothing)
+    u = q .+ Cp * guess
+    prec = isnothing(precision) ? (1 ./ calculate_entity_variance(u, obs_index)) : precision
+    Nm, T, N = length(guess), obs_index.T, obs_index.N
+    weightsum = zeros(eltype(u), Nm, T)
+    err = zeros(eltype(u), Nm, T)
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index, Matrix{eltype(u)}(undef, N, 0), 0)
+    return diagnose_nonfinite_moment(u, prec, weightsum, obs_index)
 end

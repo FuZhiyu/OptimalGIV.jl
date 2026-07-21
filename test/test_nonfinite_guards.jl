@@ -57,47 +57,56 @@ const _NF_FEQ = @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0)
     @test occursin("NonfiniteMomentError", sprint(showerror, e1))
 end
 
-@testset "moment guard: NaN response throws NonfiniteMomentError, not IsFiniteException" begin
-    # Inject a NaN into the response for one entity — a single nonfinite response
-    # observation poisons the OLS-FE residualization, mimicking the 0/0-flow bug.
+@testset "guard: NaN response → named error at the INITIAL evaluation, not mid-solve" begin
+    # A single NaN in the response poisons the shared OLS-FE residualization,
+    # mimicking the 0/0-flow bug. The guard now lives at the initial moment
+    # evaluation inside estimate_giv — exactly where NLsolve would raise its opaque
+    # IsFiniteException — so giv() surfaces the named diagnosis while the raw moment
+    # closure (build_error_function) stays unguarded (returns nonfinite, no throw).
     df = _nf_load()
     df.q[findfirst(==(levels(df.id)[4]), df.id)] = NaN
     errfunc, mats = build_error_function(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv)
     ζ = zeros(size(mats.C, 2))
 
+    # raw moment closure is NOT guarded — it returns nonfinite rather than throwing,
+    # preserving NLsolve's mid-solve recovery semantics
+    @test all(!isfinite, errfunc(ζ))
+
+    # full giv() path throws the named error at the initial evaluation
     err = try
-        errfunc(ζ)
+        giv(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv, guess=ζ, quiet=true)
         nothing
     catch e
         e
     end
     @test err isa NonfiniteMomentError
     @test occursin("residuals u nonfinite", err.msg)
-    # the full giv() path surfaces the same named error rather than IsFiniteException
-    @test_throws NonfiniteMomentError giv(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv,
-        guess=ζ, quiet=true)
+
+    # the guard lives in the shared estimate_giv entry, so :iv_twopass gets the same
+    # named diagnosis (no opaque IsFiniteException asymmetry between the IV paths)
+    @test_throws NonfiniteMomentError giv(df, _NF_FEQ, :id, :t, :absS;
+        algorithm=:iv_twopass, guess=ζ, quiet=true)
 end
 
-@testset "moment guard: degenerate (Inf) precision poisons the shared normalization" begin
+@testset "guard: degenerate (Inf) precision poisons the shared normalization" begin
     # A single Inf entity precision (near-zero residual variance ⇒ 1/σ² = Inf) makes
     # that entity's moment weightsum Inf, so the shared normalization
-    # momweight ./= sum(momweight) sends every moment row nonfinite — the mechanism
-    # by which one degenerate entity breaks all equations. Feed it via the fixed
-    # precision-weight mode so the Inf is deterministic.
+    # momweight ./= sum(momweight) sends every moment row nonfinite at the initial
+    # guess. Feed the Inf via the fixed precision-weight mode so it is deterministic.
     df = _nf_load()
     _, mats = build_error_function(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv)
     N = mats.obs_index.N
     w = ones(N)
     w[3] = Inf
     ζ = zeros(size(mats.C, 2))
-    out = try
-        errfunc, _ = build_error_function(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv,
+    err = try
+        giv(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv, guess=ζ, quiet=true,
             precision_mode=:fixed, precision_weights=w)
-        errfunc(ζ)
+        nothing
     catch e
         e
     end
-    @test out isa NonfiniteMomentError
-    @test occursin("precision", out.msg)
-    @test occursin("per-moment total weight", out.msg)
+    @test err isa NonfiniteMomentError
+    @test occursin("precision", err.msg)
+    @test occursin("per-moment total weight", err.msg)
 end
