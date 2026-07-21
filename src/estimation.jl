@@ -194,6 +194,13 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     momweight ./= sum(momweight)
     err ./= momweight
 
+    # Guard: replace NLsolve's opaque IsFiniteException with a named diagnosis of
+    # the entity/moment channel that drove the nonfinite value. Fast path (finite
+    # err) only pays one O(Nm·T) scan.
+    if any(!isfinite, err)
+        throw(diagnose_nonfinite_moment(u, prec, weightsum, obs_index))
+    end
+
     return err
 end
 
@@ -725,4 +732,86 @@ function calculate_entity_variance(u, obs_index)
     end
 
     return σu²vec
+end
+
+# ----------------------------------------------------------------------
+#  NONFINITE-MOMENT GUARD
+# ----------------------------------------------------------------------
+"""
+    NonfiniteMomentError(msg)
+
+Raised when a GIV moment evaluation produces a nonfinite (`NaN`/`Inf`) value.
+Carries a named diagnosis of the offending entities and/or moments so callers see
+the root channel instead of NLsolve's opaque `IsFiniteException` ("the evaluation
+of the following equation(s) resulted in a non-finite number: …").
+"""
+struct NonfiniteMomentError <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::NonfiniteMomentError) = print(io, "NonfiniteMomentError: ", e.msg)
+
+# Aggregate a per-observation nonfinite mask up to the entity indices it touches.
+function _entities_with_nonfinite(u, obs_index)
+    bad = falses(obs_index.N)
+    @inbounds for idx in eachindex(u)
+        if !isfinite(u[idx])
+            bad[obs_index.ids[idx]] = true
+        end
+    end
+    return findall(bad)
+end
+
+# Compact preview of an index vector for error messages: first `k`, then a count.
+_preview(v; k=10) = length(v) <= k ? string(v) : "$(v[1:k]) … ($(length(v)) total)"
+
+"""
+    diagnose_nonfinite_moment(u, prec, weightsum, obs_index) -> NonfiniteMomentError
+
+Inspect the `:iv` moment-pipeline intermediates and name the earliest channel that
+drives a nonfinite moment, so a solver failure reports *why* instead of surfacing
+NLsolve's opaque `IsFiniteException`. Channels, in dependency order:
+
+ 1. nonfinite residuals `u` — upstream `NaN`/`Inf` in the response or regressors
+    (e.g. a `0/0` flow from a zero-size entity); a single nonfinite response
+    observation poisons the shared OLS-FE residualization, so `u` (hence every
+    downstream quantity) goes nonfinite for *all* entities.
+ 2. degenerate entity precision `prec = 1/σ²` — near-zero residual variance ⇒ `Inf`
+    precision, or `NaN` propagated from channel 1.
+ 3. zero/nonfinite per-moment weight `momweight = Σₜ|weightsum|` — a moment with
+    zero total weight divides its error row by `0`; an `Inf` weight poisons the
+    shared normalization `momweight ./= sum(momweight)`, turning every row nonfinite.
+
+Returns a `NonfiniteMomentError` naming the offending entity / moment indices
+(entity indices are in the package's sorted-id order; map them back to your panel's
+id labels externally).
+"""
+function diagnose_nonfinite_moment(u, prec, weightsum, obs_index)
+    lines = String[]
+
+    bad_u = _entities_with_nonfinite(u, obs_index)
+    if !isempty(bad_u)
+        push!(lines, "residuals u nonfinite for $(length(bad_u))/$(obs_index.N) entities " *
+            "(entity indices $(_preview(bad_u))); check the response and regressors for NaN/Inf " *
+            "before estimation (a common cause is a 0/0 flow from a zero-size entity).")
+    end
+
+    bad_prec = findall(!isfinite, prec)
+    if !isempty(bad_prec)
+        push!(lines, "entity precision 1/σ² nonfinite for $(length(bad_prec)) entities " *
+            "(indices $(_preview(bad_prec))); near-zero residual variance ⇒ Inf precision, " *
+            "or NaN propagated from nonfinite residuals.")
+    end
+
+    momweight_raw = vec(sum(abs.(weightsum); dims=2))
+    bad_mw = findall(m -> !isfinite(m) || iszero(m), momweight_raw)
+    if !isempty(bad_mw)
+        push!(lines, "per-moment total weight zero or nonfinite for moments $(_preview(bad_mw)); " *
+            "zero-weight moments divide the error row by 0 and Inf weights poison the shared " *
+            "normalization so every moment row becomes nonfinite.")
+    end
+
+    isempty(lines) && push!(lines, "a moment evaluation produced a nonfinite value but no " *
+        "entity/moment channel was isolated; inspect the panel manually.")
+
+    return NonfiniteMomentError(join(lines, "\n  "))
 end
