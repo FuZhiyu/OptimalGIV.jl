@@ -101,7 +101,7 @@ end
     ζ = zeros(size(mats.C, 2))
     err = try
         giv(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv, guess=ζ, quiet=true,
-            precision_mode=:fixed, precision_weights=w)
+            precision_weights=w)
         nothing
     catch e
         e

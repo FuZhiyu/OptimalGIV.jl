@@ -161,7 +161,7 @@ end
         guess=ones(5),
         quiet=true,
         algorithm=:iv_twopass,
-        precision_mode=:cue,  # pin: this testset compares the CUE-optimal vs sandwich vcov
+        precision_weights=:cue,  # pin: this testset compares the CUE-optimal vs sandwich vcov
     )
 
     givmodel2 = giv(
@@ -173,7 +173,7 @@ end
         guess=ones(5),
         quiet=true,
         algorithm=:iv_twopass,
-        precision_mode=:cue,
+        precision_weights=:cue,
         complete_coverage=false, # use the nonoptimal vcov algorithm
     )
 

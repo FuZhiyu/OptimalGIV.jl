@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # Monte Carlo: efficiency and stability of fixed proxy precision weights
-# (precision_mode = :proxy / :fixed two-step) vs continuously-updated CUE weights.
+# (`:raw_onestep` / custom-vector two-step) vs continuously-updated CUE weights.
 #
 # Backs the researcher's conjecture that var(uqᵢ) is "close enough" to var(uᵢ):
 # reports bias, RMSE, mean SE, and 95% coverage for the size-weighted aggregate
@@ -43,17 +43,17 @@ function one_fit(df, S, trueagg; guess, solver, formula=FORMULA, kw...)
     return (true, bias, abs(bias) <= 1.96 * seagg, seagg)
 end
 
-"""Two-step :fixed: proxy first pass, then precisions from first-step residual variance."""
+"""Two-step fit: raw first pass, then precisions from first-step residual variance."""
 function twostep_fit(df, S, trueagg; guess, solver)
     m1 = try
         giv(df, FORMULA, :id, :t, :S; guess=guess, quiet=true, algorithm=:iv,
-            solver_options=solver, precision_mode=:proxy)
+            solver_options=solver, precision_weights=:raw_onestep)
     catch
         return (false, missing, missing, missing)
     end
     m1.converged || return (false, missing, missing, missing)
     return one_fit(df, S, trueagg; guess=endog_coef(m1), solver=solver,
-        precision_mode=:fixed, precision_weights=1 ./ m1.residual_variance)
+        precision_weights=1 ./ m1.residual_variance)
 end
 
 function summarize(results)
@@ -79,8 +79,8 @@ function run_mc()
         N = scen.params.N
         dfs = simulate_data(scen.params; Nsims=NREP, seed=42)
         methods = [
-            ("CUE",      (df, S, ta; kw...) -> one_fit(df, S, ta; precision_mode=:cue, kw...)),
-            ("proxy",    (df, S, ta; kw...) -> one_fit(df, S, ta; precision_mode=:proxy, kw...)),
+            ("CUE",      (df, S, ta; kw...) -> one_fit(df, S, ta; precision_weights=:cue, kw...)),
+            ("proxy",   (df, S, ta; kw...) -> one_fit(df, S, ta; precision_weights=:raw_onestep, kw...)),
             ("two-step", (df, S, ta; kw...) -> twostep_fit(df, S, ta; kw...)),
         ]
         println("=== $(scen.label) ===")
@@ -186,11 +186,11 @@ function run_cue_favorable_mc()
     @printf("contamination ζᵢ²var(p̃)/σᵤᵢ²: per-rep max mean %.2f [q10 %.2f, q90 %.2f], per-rep median mean %.2f, share>1 %.2f\n\n",
         mean(permax), quantile(permax, 0.1), quantile(permax, 0.9), mean(permed), mean(contam .> 1))
     arms = [
-        ("CUE/true",    r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:cue)),
-        ("proxy/true",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:proxy)),
-        ("proxy/ones",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=ones(5), solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:proxy)),
+        ("CUE/true",    r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_weights=:cue)),
+        ("proxy/true",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_weights=:raw_onestep)),
+        ("proxy/ones",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=ones(5), solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_weights=:raw_onestep)),
         ("oracle/true", r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA,
-            precision_mode=:fixed, precision_weights=r.oracle_w)),
+            precision_weights=r.oracle_w)),
     ]
     @printf("%-11s %6s %9s %9s %7s\n", "arm", "conv", "bias", "empSD", "cover")
     sds = Dict{String,Float64}()

@@ -12,10 +12,6 @@ function estimate_giv(
     n_pcs=0,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     precision=nothing,
-    method=:trust_region,
-    autodiff=:central,
-    jacobian=:analytic,
-    pc_solver=:onestep,
 ) where {A<:Union{Val{:iv},Val{:iv_twopass},Val{:debiased_ols}}}
     if isnothing(guess)
         if !quiet
@@ -23,11 +19,6 @@ function estimate_giv(
         end
         guess = (Cp' * Cp) \ (Cp' * q)
     end
-
-    jacobian in (:analytic, :autodiff) ||
-        throw(ArgumentError("Unknown jacobian = $(jacobian); use :analytic or :autodiff."))
-    pc_solver in (:onestep, :nested) ||
-        throw(ArgumentError("Unknown pc_solver = $(pc_solver); use :onestep or :nested."))
 
     Nmom = size(Cp, 2)
     fmom = x -> mean_moment_conditions(x, q, Cp, C, S, obs_index, complete_coverage, A(), n_pcs, pca_option; precision=precision)
@@ -44,40 +35,25 @@ function estimate_giv(
         throw(diagnose_nonfinite_at_guess(guess, q, Cp, C, S, obs_index; precision=precision))
     end
 
-    # Nested PC solve (opt-in, `pc_solver = :nested`): outer PC extraction / inner
-    # fixed-quadratic ζ solve with the analytic Jacobian. Only for internal-PC
-    # (`n_pcs > 0`) fixed-precision `:iv`/`:iv_twopass` specs; everything else keeps
-    # the one-step path (PCA re-extracted inside every moment evaluation).
-    if pc_solver == :nested && n_pcs > 0 && !isnothing(precision) &&
-       A <: Union{Val{:iv},Val{:iv_twopass}}
-        ζ̂, converged, _ = nested_pc_solve(
-            guess, q, Cp, C, S, obs_index, complete_coverage, A();
-            precision=precision, n_pcs=n_pcs, pca_option=pca_option,
-            method=method, solver_options=solver_options, quiet=quiet,
-        )
-        if !converged && !quiet
-            @warn "The estimation did not converge."
-        end
-        return ζ̂, converged
-    end
-
     # Analytic Jacobian: exact for the fixed-precision `:iv`/`:iv_twopass` kernels
-    # (`:proxy`/`:fixed` and both `:twostep` steps), where residuals are linear in
-    # ζ and momweight is constant. CUE (`precision === nothing`), internal PCs
+    # (`:raw_onestep`, custom vectors, and both `:twostep` steps), where residuals
+    # are linear in ζ and momweight is constant. CUE (`precision === nothing`), internal PCs
     # (loadings move with ζ), and `:debiased_ols` keep the autodiff/FD path.
-    # `jacobian = :autodiff` is the escape hatch back to FD/ForwardDiff everywhere.
-    use_analytic = jacobian == :analytic && !isnothing(precision) && n_pcs == 0 &&
+    use_analytic = !isnothing(precision) && n_pcs == 0 &&
                    A <: Union{Val{:iv},Val{:iv_twopass}}
     res = if use_analytic
+        # NLsolve rejects `autodiff` when an explicit Jacobian is supplied. Keep
+        # all other NLsolve controls, including `method`, on the single
+        # `solver_options` path.
+        analytic_options = (; (k => v for (k, v) in pairs(solver_options) if k != :autodiff)...)
         nlsolve(
             fmom,
             x -> mean_moment_jacobian(x, q, Cp, C, S, obs_index, complete_coverage, precision),
             guess;
-            method=method,
-            solver_options...,
+            analytic_options...,
         )
     else
-        nlsolve(fmom, guess; method=method, autodiff=autodiff, solver_options...)
+        nlsolve(fmom, guess; solver_options...)
     end
 
     converged = res.f_converged
@@ -470,11 +446,10 @@ mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm,
     vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option; precision=precision); dims=2))
 
 # ----------------------------------------------------------------------
-#  ANALYTIC JACOBIAN — fixed-precision (:proxy/:fixed/:twostep) moment kernel
+#  ANALYTIC JACOBIAN — fixed-precision moment kernel
 # ----------------------------------------------------------------------
 """
-    mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision;
-                         loadings_matrix=nothing)
+    mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision)
 
 Exact Jacobian `J[m, k] = ∂gₘ/∂ζₖ` of the fixed-precision mean moment map
 (`mean_moment_conditions` under `:iv`/`:iv_twopass` with `precision !== nothing`).
@@ -490,18 +465,11 @@ term: `ζS_t` is linear in ζ (gradient `Σ_{i∈t} Sᵢ Cᵢₖ`), clamped peri
 zero derivative, and the sum-to-one normalization contributes the quotient-rule
 correction.
 
-`loadings_matrix` (`N × k`, optional) supplies a **constant** factor-loading
-offset: the expected covariance `λᵢ'λⱼ` deducted from the pair moments, as in
-the nested-PC inner solve where loadings are held fixed. Being constant in ζ it
-enters the Jacobian only through the moment *levels* in the Mweights
-product-rule term (the pair-derivative term is unaffected).
-
 Not valid for CUE (`precision === nothing`) or internal PC extraction inside
 the kernel (`n_pcs > 0` with ζ-dependent loadings) — there the weights/loadings
 move with ζ and the solver keeps the autodiff/FD path.
 """
-function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision;
-    loadings_matrix=nothing)
+function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, precision)
     isnothing(precision) &&
         throw(ArgumentError("mean_moment_jacobian requires fixed precisions; CUE (`precision === nothing`) has no closed-form Jacobian here."))
     prec = precision
@@ -509,15 +477,14 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
     T = obs_index.T
     u = q .+ Cp * ζ
     TT = eltype(u)
-    n_load = isnothing(loadings_matrix) ? 0 : size(loadings_matrix, 2)
-    loadings = isnothing(loadings_matrix) ? Matrix{TT}(undef, obs_index.N, 0) : loadings_matrix
+    loadings = Matrix{TT}(undef, obs_index.N, 0)
 
     # Raw moment levels and weightsum: weightsum fixes the (constant) momweight row
     # scaling; the levels feed the Mweights product-rule term under complete coverage.
     err = zeros(TT, Nm, T)
     weightsum = zeros(TT, Nm, T)
-    fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings, n_load)
-    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings, n_load)
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings, 0)
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings, 0)
 
     has_excl = any(obs_index.exclpairs)
 
@@ -602,136 +569,6 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
         end
     end
     return J
-end
-
-# ----------------------------------------------------------------------
-#  NESTED PC SOLVER — outer PC extraction / inner fixed-quadratic ζ solve
-# ----------------------------------------------------------------------
-"""
-    moment_conditions_fixed_loadings(ζ, q, Cp, C, S, obs_index, complete_coverage,
-                                     precision, loadings_matrix)
-
-`:iv` mean-moment kernel with the PC loadings **held fixed** (not re-extracted
-per evaluation). Identical to `moment_conditions(::Val{:iv}; n_pcs)` except the
-`N×k` `loadings_matrix` is supplied by the caller, so the factor deduction
-`λᵢ'λⱼ` is a ζ-constant offset and, with fixed precisions, the whole map is the
-same fixed quadratic in ζ as the no-PC `:iv` kernel. This is the inner objective
-of the nested PC solve; its Jacobian is [`mean_moment_jacobian`](@ref) with the
-matching `loadings_matrix` kwarg.
-"""
-function moment_conditions_fixed_loadings(ζ, q, Cp, C, S, obs_index, complete_coverage, precision, loadings_matrix)
-    Nm = length(ζ)
-    T = obs_index.T
-    u = q .+ Cp * ζ
-    n_load = size(loadings_matrix, 2)
-    err = zeros(eltype(ζ), Nm, T)
-    weightsum = zeros(eltype(ζ), Nm, T)
-    # same O(N) fast pass + excluded-pair deduction as the :iv kernel, with the
-    # externally-supplied constant loadings (n_pcs = n_load, no re-extraction).
-    fast_pass!(weightsum, err, u, C, S, precision, obs_index, loadings_matrix, n_load)
-    deduct_excluded_pairs!(err, weightsum, C, S, u, precision, obs_index, loadings_matrix, n_load)
-    if complete_coverage
-        err .*= period_mweights(ζ, C, S, obs_index)'
-    end
-    momweight = sum(abs.(weightsum); dims=2)
-    momweight ./= sum(momweight)
-    err ./= momweight
-    return err
-end
-
-mean_moment_conditions_fixed_loadings(ζ, q, Cp, C, S, obs_index, complete_coverage, precision, loadings_matrix) =
-    vec(mean(moment_conditions_fixed_loadings(ζ, q, Cp, C, S, obs_index, complete_coverage, precision, loadings_matrix); dims=2))
-
-"""
-    nested_pc_solve(guess, q, Cp, C, S, obs_index, complete_coverage, algorithm;
-                    precision, n_pcs, pca_option, method, solver_options,
-                    outer_iterations=200, moment_tol=get(solver_options,:ftol,1e-8), quiet=true)
-
-Nested (Bai-2009-style iterated principal components) solver for internal-PC
-specifications under **fixed precisions**. Alternates:
-
-  (outer) extract `n_pcs` PCs from the residuals `u = q + Cp ζ` at the current ζ
-          (`extract_pcs_from_residuals`), fixing the `N×k` loadings; then
-  (inner) solve the fixed-loadings moment system in ζ — a fixed quadratic (up to
-          the mild complete-coverage `Mweights` nonlinearity) — with the exact
-          analytic Jacobian ([`mean_moment_jacobian`](@ref)), warm-started at the
-          previous outer iterate.
-
-Only valid for `:iv`/`:iv_twopass` with `precision !== nothing` (the inner solve
-relies on the closed-form Jacobian, which needs frozen precisions and loadings).
-
-Outer convergence is certified by the **joint moment residual**: after each outer
-step the loadings are re-extracted at the updated ζ and the fixed-loadings moment
-is re-evaluated with those *fresh* loadings — this is exactly the one-step
-objective `g(ζ; Λ(ζ))`, so its norm falling below `moment_tol` certifies the same
-joint fixed point the one-step solver targets. (A pure step-size criterion is
-unreliable here: iterated PC converges linearly, so a small ζ step can still sit a
-multiple of `step/(1-ρ)` away from the fixed point when the rate ρ is near one.)
-The Gram matrix `Λ Λ'` — the rotation/sign-invariant object the inner solve sees
-through `λᵢ'λⱼ` — is tracked in the trace so loading-subspace movement is visible;
-comparing the Gram, not raw loadings, is flip/rotation-robust.
-
-`moment_tol` defaults to the inner solve's `ftol` (from `solver_options`, else
-`1e-8`). Returns `(ζ̂, converged, trace)`, where `trace` is a NamedTuple with
-`outer_iters`, per-outer `inner_iters`, `total_inner`, final joint `moment_resid`,
-final relative Gram change `ΔG`, and `converged`.
-"""
-function nested_pc_solve(
-    guess, q, Cp, C, S, obs_index, complete_coverage, ::A;
-    precision,
-    n_pcs,
-    pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
-    method=:trust_region,
-    solver_options=(;),
-    outer_iterations=200,
-    moment_tol=get(solver_options, :ftol, 1e-8),
-    quiet=true,
-) where {A<:Union{Val{:iv},Val{:iv_twopass}}}
-    isnothing(precision) &&
-        throw(ArgumentError("nested_pc_solve requires fixed precisions (`precision !== nothing`)."))
-    n_pcs > 0 || throw(ArgumentError("nested_pc_solve requires n_pcs > 0."))
-
-    ζ = float.(copy(guess))
-    # initial loadings from residuals at the guess
-    u = q .+ Cp * ζ
-    _, loadings, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
-    Gprev = loadings * loadings'      # rotation/sign-invariant Gram = the λᵢ'λⱼ offset
-
-    inner_iters = Int[]
-    outer_iters = 0
-    converged = false
-    moment_resid = Inf
-    ΔG = Inf
-    for it in 1:outer_iterations
-        outer_iters = it
-
-        fmom = x -> mean_moment_conditions_fixed_loadings(x, q, Cp, C, S, obs_index, complete_coverage, precision, loadings)
-        jac = x -> mean_moment_jacobian(x, q, Cp, C, S, obs_index, complete_coverage, precision; loadings_matrix=loadings)
-        res = nlsolve(fmom, jac, ζ; method=method, solver_options...)
-        ζ = res.zero
-        push!(inner_iters, res.iterations)
-
-        # outer step: re-extract loadings at the updated ζ
-        u = q .+ Cp * ζ
-        _, loadings, _, _ = extract_pcs_from_residuals(u, obs_index, n_pcs; pca_option...)
-        G = loadings * loadings'
-        ΔG = norm(G .- Gprev) / (norm(Gprev) + eps())
-        Gprev = G
-
-        # joint residual: the moment at ζ under the *fresh* loadings = one-step g(ζ; Λ(ζ))
-        moment_resid = norm(mean_moment_conditions_fixed_loadings(ζ, q, Cp, C, S, obs_index, complete_coverage, precision, loadings))
-        if res.f_converged && moment_resid < moment_tol
-            converged = true
-            break
-        end
-    end
-
-    if !converged && !quiet
-        @warn "Nested PC solve did not reach joint convergence in $(outer_iterations) outer iterations (joint residual $(moment_resid))."
-    end
-
-    trace = (; outer_iters, inner_iters, total_inner=sum(inner_iters), moment_resid, ΔG, converged)
-    return ζ, converged, trace
 end
 
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)

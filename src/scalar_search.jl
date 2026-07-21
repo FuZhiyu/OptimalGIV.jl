@@ -27,10 +27,6 @@ function estimate_giv(
     n_pcs=0,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
     precision=nothing,  # fixed-weight modes are not applicable to :scalar_search; absorb & ignore
-    method=:trust_region,
-    autodiff=:central,
-    jacobian=:analytic,  # analytic Jacobian is not applicable to :scalar_search; absorb & ignore
-    pc_solver=:onestep,  # nested PC solve is not applicable to :scalar_search; absorb & ignore
     kwargs...,
 )
     tol = solver_options.ftol

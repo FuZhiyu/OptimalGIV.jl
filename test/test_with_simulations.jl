@@ -105,7 +105,7 @@ end
 # ========================================
 
 # Load the scenario generators (defines SIMULATION_SCENARIOS, including the
-# concentrated dominant-sector fixture added for the :proxy SE-calibration tests).
+# concentrated dominant-sector fixture added for the :raw_onestep SE-calibration tests).
 # Including the file only defines functions; it does not regenerate fixtures.
 include("simulate_data.jl")
 
@@ -142,8 +142,8 @@ all_results = DataFrame()
     # bars the CUE reference had to clear — MC evidence (giv-solver-stability/
     # twostep-default, cue-favorable-efficiency-mc) shows two-step matches CUE's
     # bias/SD/coverage — so they are inherited, not retuned. The now-redundant :cue
-    # and :proxy arms are dropped here: :cue/oracle are kept as explicit benchmark
-    # arms below on two representative fixtures, and :proxy stays covered by the fast
+    # and :raw_onestep arms are dropped here: :cue/oracle are kept as explicit benchmark
+    # arms below on two representative fixtures, and :raw_onestep stays covered by the fast
     # test_fixed_weight_mode.jl suite.
     standard_test_configs = [
         # (sim_label, formula, estimate_label, guess, test_params)
@@ -154,7 +154,7 @@ all_results = DataFrame()
         ("sparse panel", @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)), "fixed_effects", [2.0],
             (bias_tol=0.5, β_bias_tol=nothing, coverage_range=(0.85, 0.975), min_success=nothing, bias_broken=false)),
         # Sparse homogeneous large panel (N=100, T=1000, 90% missing). Under the old
-        # :proxy one-step mode the frozen weights carried ~3× the CUE point bias here
+        # :raw_onestep one-step mode the frozen weights carried ~3× the CUE point bias here
         # (ζ_bias≈0.034 vs 0.01, β_bias≈0.043 vs 0.02) and the two entries were held as
         # honest @test_broken. The step-2 reweighting of :twostep is expected to recover
         # CUE-level efficiency and clear the tight bar; bias_broken is set from the
@@ -175,8 +175,8 @@ all_results = DataFrame()
     ]
 
     # Primary arm: the package-default :twostep, passed explicitly (no reliance on the
-    # sentinel). The now-redundant :cue/:proxy sweep is dropped; :cue/oracle benchmark
-    # arms run below on two representative fixtures, :proxy in test_fixed_weight_mode.jl.
+    # sentinel). The now-redundant :cue/:raw_onestep sweep is dropped; :cue/oracle benchmark
+    # arms run below on two representative fixtures, :raw_onestep in test_fixed_weight_mode.jl.
     for (sim_label, formula, estimate_label, guess, test_params) in standard_test_configs
         @testset "$estimate_label [:twostep]: $sim_label" begin
             metrics = run_simulation_estimation(
@@ -185,13 +185,13 @@ all_results = DataFrame()
                 Nsims=400,
                 estimate_label=estimate_label,
                 guess=guess,
-                precision_mode=:twostep
+                precision_weights=:twostep
             )
 
             performance = summarize_metrics(metrics)
             performance.simulation .= sim_label
             performance.estimate_label .= estimate_label
-            performance.precision_mode .= "twostep"
+            performance.precision_weights .= "twostep"
             performance.simparamstr .= simparams_dict[sim_label]
             append!(all_results, performance; cols=:union)
 
@@ -220,7 +220,7 @@ all_results = DataFrame()
 end
 
 # ========================================
-# Benchmark arms: :cue and oracle :fixed on representative fixtures
+# Benchmark arms: :cue and oracle custom weights on representative fixtures
 # ========================================
 # On the two representative fixtures — baseline (N=10, T=100) and the concentrated
 # dominant-sector fixture (h=0.5) — run the CUE reference (from the true guess, its
@@ -258,8 +258,8 @@ function benchmark_metrics(reps, arm)
     for r in reps
         df = copy(r.df)
         guess = sort(unique(df, :id), :id).ζ                       # true-ζ start (CUE's best case)
-        kw = arm == :cue ? (; precision_mode=:cue) :
-             (; precision_mode=:fixed, precision_weights=r.oracle_w)  # oracle
+        kw = arm == :cue ? (; precision_weights=:cue) :
+             (; precision_weights=r.oracle_w)  # oracle
         m = try
             giv(df, BENCH_FORMULA, :id, :t, :S; guess=guess, quiet=true,
                 solver_options=(; ftol=1e-4, iterations=100), kw...)
@@ -286,7 +286,7 @@ end
                 perf = summarize_metrics(benchmark_metrics(reps, arm))
                 perf.simulation .= sim_label
                 perf.estimate_label .= "benchmark_$(arm)"
-                perf.precision_mode .= String(arm)
+                perf.precision_weights .= String(arm)
                 perf.simparamstr .= simparams_dict[sim_label]
                 append!(all_results, perf; cols=:union)
 
@@ -333,17 +333,17 @@ end
 @testset "Concentrated scenario: :twostep guess-independence" begin
     # The standard harness always starts from the true ζ, masking the headline
     # property of the fixed-weight estimator of record: guess-independence. :twostep
-    # inherits it from its :proxy step-1 solve. Here we start :twostep from generic
+    # inherits it from its :raw_onestep step-1 solve. Here we start :twostep from generic
     # guesses (all-ones and the solver's own OLS default) on the concentrated fixture
     # and check the convergence rate does not degrade vs the true-ζ start. CUE from an
     # OLS start is reported alongside for contrast (it collapses on this DGP).
     formula = @formula(q + id & endog(p) ~ 0 + id & (η1 + η2))
     sps = simparams_dict["concentrated"]
 
-    ts_true = convergence_rate(sps, formula, 10; guess_kind=:true, precision_mode=:twostep)
-    ts_ones = convergence_rate(sps, formula, 10; guess_kind=:ones, precision_mode=:twostep)
-    ts_ols = convergence_rate(sps, formula, 10; guess_kind=:ols, precision_mode=:twostep)
-    cue_ols = convergence_rate(sps, formula, 10; guess_kind=:ols, precision_mode=:cue)
+    ts_true = convergence_rate(sps, formula, 10; guess_kind=:true, precision_weights=:twostep)
+    ts_ones = convergence_rate(sps, formula, 10; guess_kind=:ones, precision_weights=:twostep)
+    ts_ols = convergence_rate(sps, formula, 10; guess_kind=:ols, precision_weights=:twostep)
+    cue_ols = convergence_rate(sps, formula, 10; guess_kind=:ols, precision_weights=:cue)
 
     if get(ENV, "VERBOSE_TESTS", "false") == "true"
         println("concentrated :twostep convergence — true=$(round(ts_true.rate, digits=3)) " *
@@ -355,7 +355,7 @@ end
     append!(all_results, DataFrame(
         simulation="concentrated (guess-independence)",
         estimate_label=["twostep_true", "twostep_ones", "twostep_ols", "cue_ols"],
-        precision_mode=["twostep", "twostep", "twostep", "cue"],
+        precision_weights=["twostep", "twostep", "twostep", "cue"],
         n_successful=[ts_true.nconv, ts_ones.nconv, ts_ols.nconv, cue_ols.nconv],
         simparamstr=sps); cols=:union)
 
@@ -398,14 +398,14 @@ end
                         estimate_label=method_label,
                         guess=[1.0],
                         quiet=true,
-                        precision_mode=:cue;  # results below are labeled "cue"
+                        precision_weights=:cue;  # results below are labeled "cue"
                         method_kwargs...
                     )
 
                     performance = summarize_metrics(metrics)
                     performance.simulation .= sim_key
                     performance.estimate_label .= method_label
-                    performance.precision_mode .= "cue"
+                    performance.precision_weights .= "cue"
                     performance.simparamstr .= simparams_dict[sim_key]
                     append!(all_results, performance; cols=:union)
 

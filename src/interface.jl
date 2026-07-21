@@ -77,15 +77,15 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
 - `contrasts::Dict{Symbol,Any} = Dict()`: Contrasts specification for categorical variables (following StatsModels.jl conventions). Untested. Use with caution.
 - `tol::Float64 = 1e-6`: Convergence tolerance for the solver and fixed effects.
 - `iterations::Int = 100`: Maximum number of iterations for the solver.
-- `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl.
-    Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
-- `precision_mode::Union{Nothing,Symbol} = nothing`: Entity precision-weighting scheme.
-    `nothing` (the default) resolves to `:twostep` — the package default changed from
-    `:cue` in v0.3.0 — and emits a one-time (per session) warning; pass any mode
-    explicitly, or set `quiet = true`, to silence it. (`:scalar_search` ignores
-    precision weighting entirely and keeps its previous behavior silently.)
+- `solver_options::NamedTuple`: Additional options passed to NLsolve.jl, including
+    `method` and derivative controls such as `autodiff`. The exact analytic Jacobian is
+    selected automatically for fixed-precision `:iv`/`:iv_twopass` solves without
+    internal PCs; `autodiff` is used only on fallback paths where NLsolve constructs the
+    Jacobian itself. Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
+- `precision_weights = :twostep`: Entity precision-weighting scheme. (`:scalar_search`
+    ignores precision weighting.)
     - `:twostep` (package default): two-step efficient GMM. Step 1 solves with the
-      `:proxy` weights; step 2 recomputes the precisions `1/var(ûᵢ)` from the step-1
+      `:raw_onestep` weights; step 2 recomputes the precisions `1/var(ûᵢ)` from the step-1
       residuals and re-solves once with those fixed weights, warm-started at the step-1
       root. Estimates and SEs come from step 2; `converged` requires both steps (if
       step 1 fails, step 2 is skipped and the non-converged step-1 estimates are
@@ -96,36 +96,18 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
     - `:cue`: continuously-updated GMM weights `1/σᵢ²(ζ)`, recomputed each solver
       evaluation (the previous default; results are byte-identical to it when pinned
       explicitly).
-    - `:proxy`: fixed data-based precisions `1/var(uqᵢ)` from the FE/control-residualized
+    - `:raw_onestep`: fixed data-based precisions `1/var(uqᵢ)` from the FE/control-residualized
       flows, computed once before solving. Under incomplete coverage this makes the moment
       map an exact fixed quadratic in ζ, removing the CUE self-weighting instability.
-    - `:fixed`: user-supplied `precision_weights` (`:twostep` ≡ `:proxy` followed by
-      `:fixed` at the step-1-residual precisions).
-- `precision_weights::Union{Nothing,AbstractVector} = nothing`: precision vector (length `N`,
-    sorted entity order) used when `precision_mode = :fixed`.
+    - An entity-length vector: user-supplied fixed precisions in sorted entity order
+      (`:twostep` is `:raw_onestep` followed by a fixed-vector solve at the
+      step-1-residual precisions).
 
-    Standard errors: with `precision_mode = :cue` and complete coverage, the CUE-optimal
+    Standard errors: with `precision_weights = :cue` and complete coverage, the CUE-optimal
     vcov is used; in every other case SEs route through the general sandwich `solve_vcov`,
     carrying the same fixed precisions as the moments (for `:twostep`, the step-2
     precisions) and, under complete coverage, the same period `Mweights` (evaluated at
     the solution) that scaled the solved moments.
-- `method::Symbol = :trust_region`, `autodiff::Symbol = :central`: passed through to
-    NLsolve.jl. `autodiff = :forward` uses ForwardDiff for the Jacobian (the moment code is
-    generic in `eltype(ζ)`). Defaults are NLsolve's own defaults, so default behavior is unchanged.
-- `jacobian::Symbol = :analytic`: Jacobian supplied to the NLsolve solve. `:analytic`
-    (default) uses the exact hand-coded Jacobian of the fixed-precision moment map whenever
-    it applies — fixed precisions (`:proxy`/`:fixed` and both `:twostep` steps) with
-    algorithm `:iv`/`:iv_twopass` and no internal PCs; in every other case (CUE, internal
-    PCs, `:debiased_ols`) the solver falls back to the `autodiff` path automatically.
-    `jacobian = :autodiff` forces the finite-difference/ForwardDiff Jacobian everywhere
-    (debugging escape hatch).
-- `pc_solver::Symbol = :onestep`: Solve strategy for internal-PC specs (`pc(k)` in the
-    formula, `n_pcs > 0`). `:onestep` (default) re-extracts the PCs inside every moment
-    evaluation and solves in one NLsolve pass. `:nested` runs a Bai-style iterated-PC
-    outer loop (extract PCs at fixed ζ) around an inner fixed-quadratic ζ solve with the
-    exact analytic Jacobian; applies only to fixed-precision `:iv`/`:iv_twopass` specs and
-    is ignored otherwise. Both converge to the same joint fixed point; `:nested` exists as
-    an alternative solve mechanism — see the nested-PC benchmark for the adoption call.
 - `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca().
     Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
@@ -146,48 +128,45 @@ The output is `m::GIVModel`. Several important fields are:
 
 
 """
-    resolve_precision(precision_mode, precision_weights, uq, obs_index)
+    resolve_precision(precision_weights, uq, obs_index)
 
 Resolve the entity precision-weight vector for the fixed-weight estimation modes.
 
 - `:cue`  → `nothing`; the moment code keeps updating `1/σᵢ²(ζ)` each evaluation
   (continuously-updated GMM, the pre-v0.3.0 default).
-- `:proxy` → `1/var(uqᵢ)` computed once from the FE/control-residualized flows,
+- `:raw_onestep` → `1/var(uqᵢ)` computed once from the FE/control-residualized flows,
   so the moment map is a fixed quadratic in ζ under incomplete coverage.
-- `:twostep` → the step-1 `:proxy` weights. The second solve (precisions from the
+- `:twostep` → the step-1 `:raw_onestep` weights. The second solve (precisions from the
   step-1 residuals) is orchestrated by `giv()`; `build_error_function` has no solve
-  loop, so its exported error function is the step-1 (proxy-weighted) moment map.
-- `:fixed` → the user-supplied `precision_weights` vector (length `N`, in sorted
-  entity order).
+  loop, so its exported error function is the step-1 raw-weighted moment map.
+- An entity-length vector is used directly as fixed precisions in sorted entity order.
 """
-function resolve_precision(precision_mode, precision_weights, uq, obs_index)
-    if precision_mode == :cue
+function resolve_precision(precision_weights, uq, obs_index)
+    if precision_weights === :cue
         return nothing
-    elseif precision_mode == :proxy || precision_mode == :twostep
+    elseif precision_weights === :raw_onestep || precision_weights === :twostep
         return 1 ./ calculate_entity_variance(uq, obs_index)
-    elseif precision_mode == :fixed
-        isnothing(precision_weights) &&
-            throw(ArgumentError("precision_mode = :fixed requires a `precision_weights` vector (length N, sorted entity order)."))
+    elseif precision_weights isa AbstractVector
         length(precision_weights) == obs_index.N ||
             throw(ArgumentError("`precision_weights` must have length N = $(obs_index.N) (got $(length(precision_weights)))."))
         return collect(float.(precision_weights))
     else
-        throw(ArgumentError("Unknown precision_mode = $(precision_mode); use :cue, :proxy, :fixed, or :twostep."))
+        throw(ArgumentError("Unknown precision_weights = $(precision_weights); use :twostep, :raw_onestep, :cue, or an entity-length vector."))
     end
 end
 
-# One-time (per session) announcement of the :cue → :twostep default change.
-# The flag flips only when the warning is actually emitted, so `quiet = true`
-# calls neither warn nor consume it.
+# One-time migration warning for calls that omit `precision_weights`. The flag
+# flips only when the warning is emitted, so quiet calls do not consume it.
 const _TWOSTEP_DEFAULT_WARNED = Ref(false)
 
-function default_precision_mode(quiet::Bool)
+function default_precision_weights(quiet::Bool)
     if !quiet && !_TWOSTEP_DEFAULT_WARNED[]
         _TWOSTEP_DEFAULT_WARNED[] = true
-        @warn "The default GIV estimator changed from :cue to :twostep (proxy first pass, " *
-              "then one re-solve with precisions from the first-step residuals). Pin " *
-              "`precision_mode = :cue` to reproduce previous results; pass any `precision_mode` " *
-              "explicitly (or set `quiet = true`) to silence this one-time warning."
+        @warn "The default GIV estimator changed from :cue to :twostep. The two-step " *
+              "estimator is more stable while retaining CUE-like efficiency, but estimates " *
+              "and standard errors may differ slightly. " *
+              "Pass `precision_weights = :twostep` explicitly (or set `quiet = true`) " *
+              "to silence this one-time warning."
     end
     return :twostep
 end
@@ -211,12 +190,7 @@ function giv(
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
     pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
-    precision_mode=nothing,  # sentinel: resolves to the package default :twostep (one-time warning)
-    precision_weights=nothing,
-    method=:trust_region,
-    autodiff=:central,
-    jacobian=:analytic,
-    pc_solver=:onestep,
+    precision_weights=nothing,  # omission sentinel; resolves to :twostep
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -252,18 +226,13 @@ function giv(
         throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
     end
 
-    # Resolve the `precision_mode = nothing` sentinel: the package default is
-    # :twostep (since v0.3.0; previously :cue), announced by a one-time warning.
-    # :scalar_search ignores precision weighting entirely, so its implicit
-    # default keeps the previous (CUE-equivalent) behavior silently.
-    if isnothing(precision_mode)
-        precision_mode = algorithm == :scalar_search ? :cue : default_precision_mode(quiet)
+    # Resolve omission to the two-step default. Scalar search ignores precision
+    # weighting and therefore does not emit or consume the migration warning.
+    if algorithm != :scalar_search && isnothing(precision_weights)
+        precision_weights = default_precision_weights(quiet)
     end
-
-    # Fixed proxy/user precision weights (non-CUE weighting; :twostep resolves to
-    # the step-1 proxy weights here). `nothing` keeps the continuously-updated
-    # CUE weights.
-    precisionvec = resolve_precision(precision_mode, precision_weights, uq, obs_index)
+    precisionvec = algorithm == :scalar_search ? nothing :
+                   resolve_precision(precision_weights, uq, obs_index)
 
     guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
     ζ̂, converged = estimate_giv(
@@ -280,20 +249,16 @@ function giv(
         n_pcs=n_pcs,
         pca_option=pca_option,
         precision=precisionvec,
-        method=method,
-        autodiff=autodiff,
-        jacobian=jacobian,
-        pc_solver=pc_solver,
     )
 
     # Two-step efficient GMM (:twostep, the package default): the solve above is
-    # step 1 (:proxy weights); step 2 recomputes the precisions 1/var(ûᵢ) from the
+    # step 1 (:raw_onestep weights); step 2 recomputes the precisions 1/var(ûᵢ) from the
     # step-1 residuals û₁ = uq + uCp ζ̂₁ and re-solves once with those fixed
     # weights, warm-started at ζ̂₁. Reported estimates and SEs come from step 2;
     # `converged` requires both steps. Iterating further would converge to a CUE
     # root (the system is exactly identified) — deliberately not pursued, as
     # iteration re-imports the CUE self-weighting instability.
-    if precision_mode == :twostep && algorithm != :scalar_search
+    if precision_weights === :twostep && algorithm != :scalar_search
         if converged
             precisionvec = 1 ./ calculate_entity_variance(uq + uCp * ζ̂, obs_index)
             ζ̂, converged2 = estimate_giv(
@@ -310,14 +275,10 @@ function giv(
                 n_pcs=n_pcs,
                 pca_option=pca_option,
                 precision=precisionvec,
-                method=method,
-                autodiff=autodiff,
-                jacobian=jacobian,
-                pc_solver=pc_solver,
             )
             converged = converged && converged2
         elseif !quiet
-            @warn "Two-step step 1 (:proxy) did not converge; skipping step 2 and returning the non-converged step-1 estimates."
+            @warn "Two-step step 1 (:raw_onestep) did not converge; skipping step 2 and returning the non-converged step-1 estimates."
         end
     end
     β_q = β_ols[:, 1]
@@ -328,7 +289,7 @@ function giv(
     if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
         # Vcov routing rule: the sandwich `solve_vcov` is the default everywhere;
         # `solve_optimal_vcov` only when the weights are exact CUE
-        # (`precision_mode = :cue`) AND coverage is complete.
+        # (`precision_weights = :cue`) AND coverage is complete.
         if isnothing(precisionvec)
             if complete_coverage
                 σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
@@ -668,11 +629,11 @@ end
 
 Export the error function for the GIV model. This function is useful for debugging and customized solvers.
 
-`precision_mode = nothing` (the default) resolves to the package default `:twostep`,
-which here means the **step-1 proxy weights** `1/var(uqᵢ)` — the export has no solve
+`precision_weights = :twostep` is the package default. Here it means the
+**step-1 raw weights** `1/var(uqᵢ)` — the export has no solve
 loop, so the returned function is the step-1 (fixed-quadratic) moment map. Pass
-`precision_mode = :cue` for the continuously-updated map, or `:fixed` with
-step-1-residual precisions for the step-2 map.
+`precision_weights = :cue` for the continuously-updated map, or an entity-length
+vector of step-1-residual precisions for the step-2 map.
 
 When the exported map has an exact closed-form Jacobian (fixed precisions,
 algorithm `:iv`/`:iv_twopass`, no internal PCs), the returned NamedTuple carries it
@@ -692,10 +653,11 @@ function build_error_function(df,
     contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
-    precision_mode=nothing,  # sentinel: package default :twostep ⇒ step-1 proxy weights here
-    precision_weights=nothing,
+    precision_weights=:twostep,
     kwargs...
 )
+    haskey(kwargs, :precision_mode) &&
+        throw(ArgumentError("`precision_mode` was replaced by `precision_weights`; use :twostep, :raw_onestep, :cue, or an entity-length vector."))
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
     formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
@@ -749,12 +711,8 @@ function build_error_function(df,
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
-        # `nothing` sentinel → package default :twostep, which resolves to the
-        # step-1 proxy weights here (no solve loop in this export).
-        if isnothing(precision_mode)
-            precision_mode = default_precision_mode(quiet)
-        end
-        precisionvec = resolve_precision(precision_mode, precision_weights, uq, obs_index)
+        # :twostep resolves to the step-1 raw weights here (no solve loop in this export).
+        precisionvec = resolve_precision(precision_weights, uq, obs_index)
         err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option; precision=precisionvec)
         # Exact Jacobian of the exported moment map, when defined (fixed precisions,
         # `:iv`/`:iv_twopass`, no internal PCs); `nothing` otherwise.
