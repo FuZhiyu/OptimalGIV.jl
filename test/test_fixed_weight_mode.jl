@@ -1,6 +1,6 @@
 using Test, OptimalGIV, Random, LinearAlgebra
 using OptimalGIV: build_error_function, resolve_precision, calculate_entity_variance,
-    solve_vcov, moment_conditions
+    solve_vcov, moment_conditions, period_mweights
 using DataFrames, CSV, CategoricalArrays
 
 # ---------------------------------------------------------------------------
@@ -132,6 +132,118 @@ end
     @test vcov(m_proxy) ≈ Σref
     @test all(isfinite, vcov(m_proxy))
     @test isposdef(Symmetric(vcov(m_proxy)))
+end
+
+# ---------------------------------------------------------------------------
+# Complete-coverage sandwich SEs: the :iv kernels scale each period's moments by
+# period_mweights (∝ 1/clamp(|ζS_t|, √eps, Inf), normalized); under the fixed-weight
+# modes solve_vcov must carry the same Mweights (evaluated at the solution) into W
+# so the SEs match the moments actually solved (giv-solver-stability/
+# complete-coverage-vcov).
+# ---------------------------------------------------------------------------
+
+# Independent O(N²) reference: build the period-scaled sandwich A/B directly from
+# the within-period pair loop, mirroring solve_vcov's math (same A/(T-1), B/T
+# normalizations) without its pair-array machinery.
+function _reference_sandwich_vcov(u, S, C, Cp, obs_index, prec, Mw)
+    Nmom = size(C, 2)
+    T = obs_index.T
+    σu² = calculate_entity_variance(u, obs_index)
+    A = zeros(Nmom, Nmom)
+    B = zeros(Nmom, Nmom)
+    for t in 1:T
+        r = obs_index.start_indices[t]:obs_index.end_indices[t]
+        mw = isnothing(Mw) ? 1.0 : Mw[t]
+        for ii in r, jj in (ii+1):last(r)
+            i, j = obs_index.ids[ii], obs_index.ids[jj]
+            w = [mw * (prec[i] * S[jj] * C[ii, k] + prec[j] * S[ii] * C[jj, k]) for k in 1:Nmom]
+            d = [u[jj] * Cp[ii, k] + u[ii] * Cp[jj, k] for k in 1:Nmom]
+            A .+= d * w'                     # (D'W)[k, l] summed pair by pair
+            B .+= (σu²[i] * σu²[j]) .* (w * w')  # (W' diag(V) W) summed pair by pair
+        end
+    end
+    A ./= (T - 1)
+    B ./= T
+    B = Symmetric(B + B') / 2
+    invA = inv(A)
+    Σ = invA * B * invA' / T
+    return Symmetric(Σ + Σ') / 2
+end
+
+@testset "complete-coverage vcov: period-scaled sandwich (time-varying ζS)" begin
+    # DGP with genuinely time-varying aggregate elasticity: sizes S_it move over t
+    # and p_t clears the market exactly, so complete coverage is auto-detected.
+    Random.seed!(20260720)
+    N, T = 5, 80
+    ζtrue = [0.5, 1.0, 1.5, 2.0, 3.0]
+    Smat = rand(N, T) .^ 3 .+ 0.05
+    Smat ./= sum(Smat; dims=1)
+    umat = randn(N, T) .* (0.5 .+ rand(N))
+    p = [dot(Smat[:, t], umat[:, t]) / dot(Smat[:, t], ζtrue) for t in 1:T]
+    qmat = umat .- ζtrue * p'
+    df = DataFrame(
+        id=CategoricalArray(repeat(1:N, T)),
+        t=repeat(1:T; inner=N),
+        q=vec(qmat),
+        p=repeat(p; inner=N),
+        S=vec(Smat),
+    )
+    fml = @formula(q + id & endog(p) ~ 0)
+
+    m = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv, precision_mode=:proxy)
+    @test m.complete_coverage
+    @test m.converged
+
+    _, mats = build_error_function(df, fml, :id, :t, :S; algorithm=:iv, precision_mode=:proxy)
+    û = mats.uq + mats.uCp * endog_coef(m)
+    Mw = period_mweights(endog_coef(m), mats.C, mats.S, mats.obs_index)
+    @test maximum(Mw) / minimum(Mw) > 1.2   # period weights genuinely time-varying
+
+    _, Σ_scaled = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index;
+        precision=mats.precision, Mweights=Mw)
+    _, Σ_unscaled = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index;
+        precision=mats.precision)
+
+    # giv() routes complete-coverage fixed-mode SEs through the period-scaled sandwich
+    @test vcov(m) ≈ Σ_scaled
+    # teeth: the period scaling genuinely moves the SEs
+    @test norm(Σ_scaled - Σ_unscaled) / norm(Σ_unscaled) > 1e-3
+    # independent O(N²) reference reproduces the fast implementation
+    Σ_ref = _reference_sandwich_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index,
+        mats.precision, Mw)
+    @test Σ_scaled ≈ Σ_ref rtol = 1e-8
+    # and with Mw === nothing the reference also reproduces the unscaled sandwich
+    Σ_ref0 = _reference_sandwich_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index,
+        mats.precision, nothing)
+    @test Σ_unscaled ≈ Σ_ref0 rtol = 1e-8
+end
+
+@testset "complete-coverage vcov: uniform Mweights leave simdata1 SEs unchanged" begin
+    # simdata1's aggregate elasticity is constant over time ⇒ Mweights are uniform,
+    # and a uniform rescaling of the periods cancels in A⁻¹BA⁻ᵀ: the fix must leave
+    # these SEs unchanged relative to the unscaled sandwich.
+    df = _load_simdata1()
+    m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv, precision_mode=:proxy)
+    @test m.complete_coverage
+
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv, precision_mode=:proxy)
+    û = mats.uq + mats.uCp * endog_coef(m)
+    Mw = period_mweights(endog_coef(m), mats.C, mats.S, mats.obs_index)
+    @test maximum(Mw) - minimum(Mw) < 1e-12   # uniform period weights
+
+    _, Σ_unscaled = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index; precision=mats.precision)
+    @test vcov(m) ≈ Σ_unscaled rtol = 1e-10
+end
+
+@testset "complete-coverage vcov: incomplete-coverage fixed-mode SEs byte-unchanged" begin
+    df = _load_simdata1()
+    m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        precision_mode=:proxy, complete_coverage=false)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv,
+        precision_mode=:proxy, complete_coverage=false)
+    û = mats.uq + mats.uCp * endog_coef(m)
+    _, Σ = solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index; precision=mats.precision)
+    @test vcov(m) == Σ   # byte-identical: no Mweights anywhere in the incomplete path
 end
 
 @testset "fixed-weight mode: default (:cue) behavior unchanged" begin

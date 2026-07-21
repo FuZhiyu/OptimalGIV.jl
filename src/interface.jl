@@ -89,6 +89,11 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
       (solve with `:proxy`, then re-solve once with precisions from the first-step residuals).
 - `precision_weights::Union{Nothing,AbstractVector} = nothing`: precision vector (length `N`,
     sorted entity order) used when `precision_mode = :fixed`.
+
+    Standard errors: with `precision_mode = :cue` and complete coverage, the CUE-optimal
+    vcov is used; in every other case SEs route through the general sandwich `solve_vcov`,
+    carrying the same fixed precisions as the moments and, under complete coverage,
+    the same period `Mweights` (evaluated at the solution) that scaled the solved moments.
 - `method::Symbol = :trust_region`, `autodiff::Symbol = :central`: passed through to
     NLsolve.jl. `autodiff = :forward` uses ForwardDiff for the Jacobian (the moment code is
     generic in `eltype(ζ)`). Defaults are NLsolve's own defaults, so default behavior is unchanged.
@@ -226,6 +231,9 @@ function giv(
 
     û = uq + uCp * ζ̂
     if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
+        # Vcov routing rule: the sandwich `solve_vcov` is the default everywhere;
+        # `solve_optimal_vcov` only when the weights are exact CUE
+        # (`precision_mode = :cue`) AND coverage is complete.
         if isnothing(precisionvec)
             if complete_coverage
                 σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
@@ -236,8 +244,12 @@ function giv(
             end
         else
             # Fixed-weight mode: SEs use the same fixed weights as the moments
-            # (not the CUE-optimal weights), via the general sandwich.
-            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index; precision=precisionvec)
+            # (not the CUE-optimal weights), via the general sandwich. When the
+            # `:iv` kernels solved period-Mweighted moments (complete coverage),
+            # carry the same Mweights evaluated at the solution into the sandwich `W`.
+            Mw = complete_coverage && algorithm in (:iv, :iv_twopass) ?
+                 period_mweights(ζ̂, C, S, obs_index) : nothing
+            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index; precision=precisionvec, Mweights=Mw)
         end
         if size(X_feres, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)

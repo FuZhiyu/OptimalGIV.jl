@@ -143,11 +143,8 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
     if complete_coverage
-        ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
-        Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
-        Mweights ./= sum(Mweights)
-        err .*= Mweights'
-        # weightsum .*= Mweights'
+        err .*= period_mweights(ζ, C, S, obs_index)'
+        # weightsum is left unscaled
     end
 
     # equal weight the final moment conditions for numerical stability
@@ -189,11 +186,8 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     # the efficient weighting requires the scaling of multiplier for each period
     # only feasible when we observe the full market
     if complete_coverage
-        ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
-        Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
-        Mweights ./= sum(Mweights)
-        err .*= Mweights'
-        # weightsum .*= Mweights'
+        err .*= period_mweights(ζ, C, S, obs_index)'
+        # weightsum is left unscaled
     end
 
     # equal weight the final moment conditions for numerical stability
@@ -454,6 +448,23 @@ function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     return ζSvec
 end
 
+"""
+    period_mweights(ζ, C, S, obs_index)
+
+Clamped, normalized period weights applied to the moments under complete
+coverage: `Mweights_t ∝ 1 / clamp(|ζS_t|, √eps, Inf)`, normalized to sum to one.
+Shared between the `:iv`/`:iv_twopass` moment kernels and the sandwich `solve_vcov`
+so the vcov `W` carries exactly the period scaling of the moments actually solved
+(period weighting is column scaling *before* averaging over `t` — it changes the
+estimator, unlike the `momweight` row scaling, which cancels in the sandwich).
+"""
+function period_mweights(ζ, C, S, obs_index)
+    ζS = solve_aggregate_elasticity(ζ, C, S, obs_index)
+    Mweights = 1 ./ clamp.(abs.(ζS), sqrt(eps(eltype(ζS))), Inf) # avoid division by zero
+    Mweights ./= sum(Mweights)
+    return Mweights
+end
+
 function solve_optimal_vcov(ζ, u, S, C, obs_index)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
@@ -517,7 +528,7 @@ end
 
 
 
-function solve_vcov(u, S, C, Cp, obs_index; precision=nothing)
+function solve_vcov(u, S, C, Cp, obs_index; precision=nothing, Mweights=nothing)
     Nmom = size(C, 2)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
@@ -549,7 +560,7 @@ function solve_vcov(u, S, C, Cp, obs_index; precision=nothing)
     # fixed-weight mode carries in the same fixed precisions used in the moments so
     # the sandwich SEs are consistent with the estimator actually solved.
     prec = isnothing(precision) ? 1 ./ σu²vec : precision
-    # Step 4: Compute W matrix (previous D without Mvec scaling)
+    # Step 4: Compute W matrix (the moment weights applied to each pair)
     for t in 1:T
         for idx in 1:n_pairs
             i, j = pair_i[idx], pair_j[idx]
@@ -559,14 +570,27 @@ function solve_vcov(u, S, C, Cp, obs_index; precision=nothing)
                 continue
             end
             for k in 1:Nmom
-                # when we do not have the full market, we do not scale it by Mvec
                 W[idx, k, t] = prec[i] * S[j_pos] * C[i_pos, k] + prec[j] * S[i_pos] * C[j_pos, k]
                 D[idx, k, t] = u[j_pos] * Cp[i_pos, k] + u[i_pos] * Cp[j_pos, k]
             end
         end
     end
 
-    # Step 6: Final calculation via sandwich formula
+    # Step 5: period scaling. When the moments were solved under complete coverage,
+    # each period's moments were multiplied by `period_mweights` (evaluated at ζ̂ by
+    # the caller); carry the identical scaling into W so the sandwich matches the
+    # estimator actually solved. Without complete coverage (`Mweights === nothing`,
+    # no period weights in the moments) the computation is byte-identical to before.
+    # The `momweight` row normalization needs no counterpart here: row scaling of an
+    # exactly-identified system cancels in A⁻¹BA⁻ᵀ, as does any global rescaling of
+    # Mweights — only relative period weights matter.
+    if !isnothing(Mweights)
+        @views for t in 1:T
+            W[:, :, t] .*= Mweights[t]
+        end
+    end
+
+    # Step 6: final calculation via sandwich formula
     # Compute sums of D'W and W'Vdiag W across time periods
     A = zeros(eltype(u), Nmom, Nmom)
     B = zeros(eltype(u), Nmom, Nmom)
