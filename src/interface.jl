@@ -1,133 +1,3 @@
-"""
-    giv(df, formula, id, t, weight; <keyword arguments>)
-
-
-Estimate the GIV model given by:
-
-```math
-    q_it +  endog(p_t) × C_it' ζ = X_it' β + u_it
-```
-such that p_t is pinned down by market clearing condition Σ_i (q_it S_it) = 0, and E[u_it u_jt] = 0. 
-
-It returns a `GIVModel` object containing the estimated coefficients, standard errors, and other information.
-
-# Arguments
-
-- `df::DataFrame`: A DataFrame containing the data. Only balanced panel is supported for now. 
-    It is recommended to sort the data by `t` and `id`.
-- `formula::FormulaTerm`: A formula specifying the model. The formula should be in the form of
-    `q + (C1 + C2+...) & endog(p) ~ exog_controls`, where 
-        
-    - `q` is the response variable, 
-    - `endog(p)` indicates p is the endogenous variable,
-    - `C1, C2, ...` can be the categorical variables to specify heterogeneous loadings, or exogenous variables to be interacted with the endogenous variable; when `x` are ommited, different entities are assumed to have the same loadings.
-    - `exog_controls` are the exogenous variables. Notice that by default the model does not include an intercept term. If the mean is not zero, it is recommended to an entity fixed effect to demean the data.
-
-    For example, `formula` can be written as
-    ```julia
-    @formula(q + id & endog(p) + C & endog(p) ~ id & η + id)
-    ```
-
-
-    Also notice that 
-    - Endogenous variables are assumed to be on the left-hand side of the formula; 
-    - All categorical&Bool variables are treated as fixed effects. 
-- `id::Symbol`: The column name of the entity identifier.
-- `t::Symbol`: The column name of the time identifier. `t` and `id` should uniquely identify each observation.
-- `weight::Union{Symbol,Nothing}`: The column name of the weight variable for each entities. The weight must be non-negative. 
-    You can flip swap the sign of `q` and `weight` if necessary. 
-
-## Keyword Arguments
-
-- `guess`: Initial guess for the coefficients in front of endogenous terms. If not provided, the initial guess is set using OLS. 
-    Guess can be supplied in multiple ways:
-    - A vector in the order of coefficient enters the formula. For categorical variables the order is determined by the variable.
-    - A dictionary with the key being the name (either a string or a symbol) of the interaction term and the value being the initial guess 
-    (a vector in the case of categorical variables and a number otherwise). In the example above, the initial guess can be provided as
-    ```julia
-    guess = Dict(:id => [1.0, 2.0], :η => 0.5)
-    ```
-- `exclude_pairs::Dict{Int,Vector{Int}} = Dict()`: A dictionary specifying entity pairs to exclude from the moment conditions. 
-    Keys are entity IDs and values are vectors of entity IDs to exclude. For example:
-    ```julia
-    exclude_pairs = Dict(1 => [2, 3], 4 => [5])  # Exclude pairs (1,2), (1,3), (4,5)
-    ```
-- `algorithm::Symbol = :iv`: The algorithm to use for estimation. The default is `:iv`. The options are
-    - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0. 
-    This algorithm uses an identity to achieve O(N) computational complexity.
-    - `:iv_twopass`: Numerically identical to `:iv` but uses a more straightforward O(N²) implementation. 
-    Useful for debugging or when the O(N) trick causes numerical issues.
-    - `:debiased_ols`: `:debiased_ols` uses the moment condition such that E[u_i C_it p_it] = 1/ζ_St σ_i^2. ]
-    It requires the adding-up constraint is satisifed so that Σ_i (q_it weight_i) = 0. 
-    If not, the aggregate elasticity will be underestimated.
-    - `:scalar_search`: `:scalar_search` uses the same moment condition `up` but requires the aggregate elasticity be constant across time. 
-    It searches for the scalar of the aggregate elasticity and hence very efficient. 
-    It can be used for diagnoises or forming initial guess for other algorithms. 
-- `quiet::Bool = false`: If `true`, suppress warnings and information messages.
-- `save::Symbol = :none`: Controls what additional information to save:
-    - `:none`: Save only the coefficients and standard errors (default)
-    - `:residuals`: Save residuals in the returned model
-    - `:fe`: Save fixed effects estimates
-    - `:all`: Save both residuals and fixed effects
-- `save_df::Bool = false`: If `true`, the processed estimation DataFrame (including residuals, fixed-effects, and coefficient columns when requested) is stored in the returned model under `df`. This can be useful for post-estimation analysis but increases memory usage.
-- `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
-    If `nothing` (default), automatically detected by checking the market clearing condition. 
-    Can be manually set to `true` or `false` for debugging purposes.
-- `return_vcov::Bool = true`: Whether to calculate and return the variance-covariance matrix.
-- `contrasts::Dict{Symbol,Any} = Dict()`: Contrasts specification for categorical variables (following StatsModels.jl conventions). Untested. Use with caution.
-- `tol::Float64 = 1e-6`: Convergence tolerance for the solver and fixed effects.
-- `iterations::Int = 100`: Maximum number of iterations for the solver.
-- `solver_options::NamedTuple`: Additional options passed to NLsolve.jl, including
-    `method` and derivative controls such as `autodiff`. The exact analytic Jacobian is
-    selected automatically for fixed-precision `:iv`/`:iv_twopass` solves without
-    internal PCs; `autodiff` is used only on fallback paths where NLsolve constructs the
-    Jacobian itself. In NLsolve's API, `autodiff = :central` means central finite
-    differences, while `autodiff = :forward` uses ForwardDiff. Default is
-    `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
-- `precision_weights = :twostep`: Entity precision-weighting scheme. (`:scalar_search`
-    ignores precision weighting.) Omitting this keyword selects `:twostep` and emits a
-    one-time notice unless `quiet = true`; passing it explicitly acknowledges the choice.
-    - `:twostep` (package default): two-step efficient GMM. Step 1 solves with the
-      `:raw_onestep` weights; step 2 recomputes the precisions `1/var(ûᵢ)` from the step-1
-      residuals and re-solves once with those fixed weights, warm-started at the step-1
-      root. Estimates and SEs come from step 2; `converged` requires both steps (if
-      step 1 fails, step 2 is skipped and the non-converged step-1 estimates are
-      returned). The two-step is the standard efficient-GMM truncation: its fixed point
-      under further iteration is exactly a CUE root (the system is exactly identified),
-      but iterating is deliberately not pursued because it re-imports the CUE
-      self-weighting instability.
-    - `:cue`: continuously-updated GMM weights `1/σᵢ²(ζ)`, recomputed each solver
-      evaluation (the previous default; results are byte-identical to it when pinned
-      explicitly).
-    - `:raw_onestep`: fixed data-based precisions `1/var(uqᵢ)` from the FE/control-residualized
-      flows, computed once before solving. Under incomplete coverage this makes the moment
-      map an exact fixed quadratic in ζ, removing the CUE self-weighting instability.
-    - An entity-length vector: user-supplied fixed precisions in sorted entity order
-      (`:twostep` is `:raw_onestep` followed by a fixed-vector solve at the
-      step-1-residual precisions).
-
-    Standard errors: with `precision_weights = :cue` and complete coverage, the CUE-optimal
-    vcov is used; in every other case SEs route through the general sandwich `solve_vcov`,
-    carrying the same fixed precisions as the moments (for `:twostep`, the step-2
-    precisions) and, under complete coverage, the same period `Mweights` (evaluated at
-    the solution) that scaled the solved moments.
-- `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca().
-    Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
-
-# Output
-
-The output is `m::GIVModel`. Several important fields are:
-
-  - `endog_coef`: Coefficients on endogenous terms (vector `ζ̂`).
-  - `exog_coef`: Coefficients on exogenous control variables (vector `β`).
-  - `endog_vcov`: Variance-covariance matrix of `endog_coef`.
-  - `exog_vcov`: Variance-covariance matrix of `exog_coef`.
-  - `agg_coef`: Aggregate (or average) elasticity. Scalar if constant across time, otherwise a vector indexed by `t`.
-  - `residual_variance`: Estimated residual variance for each `id`.
-  - `coefdf::DataFrame`: Tidy DataFrame with entity-specific coefficients (and, when requested, fixed effects).
-  - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
-
-"""
 
 """
     resolve_precision(precision_weights, uq, obs_index)
@@ -451,16 +321,18 @@ end
 @doc """
     giv(df, formula, id, t, weight; <keyword arguments>)
 
-Estimate a GIV model. The `precision_weights` keyword accepts `:twostep` (the
-default), `:raw_onestep`, `:cue`, or an entity-length vector of fixed precisions.
-Omitting the keyword selects `:twostep` and emits a one-time notice unless
-`quiet = true`.
+Estimate a GIV model from panel data.
 
-Pass NLsolve-specific controls such as `method` and `autodiff` through
-`solver_options`. The exact analytic Jacobian is selected automatically for
-fixed-precision `:iv`/`:iv_twopass` solves without internal PCs. On fallback
-paths, NLsolve's `autodiff = :central` means central finite differences, while
-`:forward` uses ForwardDiff.
+`precision_weights` accepts `:twostep` (default), `:raw_onestep`, `:cue`,
+or an entity-length vector of fixed precisions. Omitting it selects `:twostep`
+and emits a one-time notice unless `quiet = true`.
+
+Use `complete_coverage` only to override automatic coverage detection, `guess` to
+provide starting coefficients, and `save` or `save_df` to retain post-estimation
+data. Additional NLsolve options may be passed in `solver_options`.
+
+Returns a `GIVModel`; use `coeftable`, `endog_coef`, `exog_coef`,
+`agg_coef`, and `vcov` for the main results.
 """ giv
 
 """
@@ -651,11 +523,6 @@ step-1 `:raw_onestep` moment map with precisions `1/var(uqᵢ)`, because this he
 does not run the second solve. Pass `precision_weights = :cue` for the continuously
 updated map or an entity-length vector for a custom fixed map.
 
-When the exported map has an exact closed-form Jacobian (fixed precisions,
-algorithm `:iv`/`:iv_twopass`, no internal PCs), the returned NamedTuple carries it
-as `jac_func` (`ζ -> Nmom×Nmom` matrix, via [`mean_moment_jacobian`](@ref)); it is
-`nothing` otherwise. Useful for root diagnostics (SVD/weak-direction analysis at ζ̂)
-without finite-differencing the moment map.
 """
 function build_error_function(df,
     formula::FormulaTerm,

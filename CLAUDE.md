@@ -105,10 +105,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 - For `:scalar_search`: Dict with "Aggregate" key
 
 #### Solver Configuration
-- Use `solver_options` for NLsolve-specific controls such as `method` and `autodiff`; do not add top-level solver keywords
-- The analytic Jacobian is selected automatically for fixed-precision `:iv`/`:iv_twopass` solves without internal PCs
-- NLsolve's `autodiff = :central` means central finite differences; `:forward` uses ForwardDiff
-- Internal-PC specifications use the built-in one-pass solve; there is no public PC-solver selector
+- Keep dependency-specific solver settings inside `solver_options`; do not add top-level solver or PC-solver keywords
 
 #### Panel Data Handling
 - Unbalanced panels supported for `:iv` algorithms
