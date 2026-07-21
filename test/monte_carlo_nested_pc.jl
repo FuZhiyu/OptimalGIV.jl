@@ -206,19 +206,22 @@ function bench_config(label, params, ngrp, formula, reps)
     t_prx = _timed(prx_f, prep, reps)
     t_nes = _timed(nes_f, prep, reps)
 
-    # deterministic counts from a representative solve (rep 1).
-    _, _, n_cue = cue_f(1)
-    _, _, n_prx = prx_f(1)
-    _, _, tr = nes_f(1)
+    # deterministic counts + convergence from a representative solve (rep 1).
+    _, cv_cue, n_cue = cue_f(1)
+    zp, cv_prx, n_prx = prx_f(1)
+    zn, cv_nes, tr = nes_f(1)
     pca_nest = tr.outer_iters + 1
 
-    @printf("%-13s %11s %12s %-24s\n", "arm", "median ms", "PCA calls", "kernel work")
-    @printf("%-13s %11.2f %12d %-24s\n", "CUE 1-step", 1e3 * t_cue, n_cue, "$(n_cue) kernel evals")
-    @printf("%-13s %11.2f %12d %-24s\n", "proxy 1-step", 1e3 * t_prx, n_prx, "$(n_prx) kernel evals")
-    @printf("%-13s %11.2f %12d %-24s\n", "proxy nested", 1e3 * t_nes, pca_nest,
+    @printf("%-13s %11s %12s %6s %-24s\n", "arm", "median ms", "PCA calls", "conv", "kernel work")
+    @printf("%-13s %11.2f %12d %6s %-24s\n", "CUE 1-step", 1e3 * t_cue, n_cue, cv_cue, "$(n_cue) kernel evals")
+    @printf("%-13s %11.2f %12d %6s %-24s\n", "proxy 1-step", 1e3 * t_prx, n_prx, cv_prx, "$(n_prx) kernel evals")
+    @printf("%-13s %11.2f %12d %6s %-24s\n", "proxy nested", 1e3 * t_nes, pca_nest, tr.converged,
         "$(tr.outer_iters) outer / $(tr.total_inner) inner")
-    @printf("speedup nested vs proxy-1step = %.2fx ; vs CUE-1step = %.2fx ; PCA-call reduction vs proxy-1step = %.1fx\n\n",
-        t_prx / t_nes, t_cue / t_nes, n_prx / pca_nest)
+    # A speedup is only meaningful when BOTH compared arms converged; otherwise the
+    # timing compares stalls, not solutions (nested at outer cap ⇒ converged=false).
+    gate = (cv_prx && tr.converged) ? "" : "  [INVALID: an arm did not converge — timing compares stalls, not solutions]"
+    @printf("speedup nested vs proxy-1step = %.2fx ; vs CUE-1step = %.2fx ; PCA-call reduction vs proxy-1step = %.1fx ; ‖ζ_ne−ζ_prx‖=%.2e%s\n\n",
+        t_prx / t_nes, t_cue / t_nes, n_prx / pca_nest, norm(zn .- zp), gate)
     flush(stdout)
 end
 
