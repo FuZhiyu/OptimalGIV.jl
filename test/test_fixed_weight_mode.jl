@@ -83,6 +83,59 @@ end
         algorithm=:scalar_search, complete_coverage=false)
 end
 
+@testset "algorithm × coverage × precision compatibility matrix" begin
+    df = _load_simdata1()
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
+    custom = copy(mats.precision)
+    precision_cases = [
+        (:raw_onestep, :raw_onestep),
+        (:twostep, :twostep),
+        (:cue, :cue),
+        (:custom, custom),
+    ]
+    iv_cases = [
+        (; algorithm, coverage, precision_label, precision_weights)
+        for algorithm in (:iv, :iv_twopass), coverage in (false, true),
+            (precision_label, precision_weights) in precision_cases
+    ]
+    @test length(iv_cases) == 16
+    for case in iv_cases
+        @testset "$(case.algorithm), coverage=$(case.coverage), $(case.precision_label)" begin
+            m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+                algorithm=case.algorithm, complete_coverage=case.coverage,
+                precision_weights=case.precision_weights, return_vcov=false)
+            @test m.complete_coverage == case.coverage
+            @test m.converged
+            @test all(isfinite, endog_coef(m))
+        end
+    end
+
+    full_market_formula = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+    specialized_cases = [
+        (; algorithm=:debiased_ols, guess=[1.0], precision_weights=:cue),
+        (; algorithm=:scalar_search, guess=Dict("Aggregate" => 2.0), precision_weights=nothing),
+    ]
+    for case in specialized_cases
+        @testset "$(case.algorithm), complete coverage" begin
+            kwargs = isnothing(case.precision_weights) ? (;) :
+                     (; precision_weights=case.precision_weights)
+            m = giv(df, full_market_formula, :id, :t, :absS; guess=case.guess,
+                quiet=true, algorithm=case.algorithm, complete_coverage=true,
+                return_vcov=false, kwargs...)
+            @test m.complete_coverage
+            @test m.converged
+        end
+        @testset "$(case.algorithm), incomplete coverage rejected quietly" begin
+            kwargs = isnothing(case.precision_weights) ? (;) :
+                     (; precision_weights=case.precision_weights)
+            @test_throws ArgumentError giv(df, full_market_formula, :id, :t, :absS;
+                guess=case.guess, quiet=true, algorithm=case.algorithm,
+                complete_coverage=false, return_vcov=false, kwargs...)
+        end
+    end
+end
+
 @testset "complete-coverage clamp and final-root domain" begin
     panel = DataFrame(id=CategoricalArray(repeat(1:2, 4)), t=repeat(1:4; inner=2))
     obs_index = create_observation_index(panel, :id, :t, Dict{Int,Vector{Int}}())
