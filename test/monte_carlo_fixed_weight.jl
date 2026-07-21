@@ -9,9 +9,10 @@
 # gain the fixed-weight mode is meant to deliver.
 #
 # Run:  julia --project=. test/monte_carlo_fixed_weight.jl
+# Sections selectable via GIV_MC_SECTIONS (comma list of base,cue_favorable; default both).
 # ---------------------------------------------------------------------------
 using OptimalGIV, DataFrames, Random, LinearAlgebra, Statistics, Printf
-using OptimalGIV: simulate_data
+using OptimalGIV: simulate_data, SimModel
 
 # Scenarios drawn from test/simulate_data.jl SIMULATION_SCENARIOS, kept moderate.
 const MC_SCENARIOS = [
@@ -28,9 +29,9 @@ const SOLVER_STAB = (; ftol=1e-6, iterations=100)
 agg_truth(df) = (iddf = sort(unique(df, :id), :id); (sum(iddf.S .* iddf.ζ), iddf.S))
 
 """One estimation → (converged, agg_bias, covered, se_agg)."""
-function one_fit(df, S, trueagg; guess, solver, kw...)
+function one_fit(df, S, trueagg; guess, solver, formula=FORMULA, kw...)
     m = try
-        giv(df, FORMULA, :id, :t, :S; guess=guess, quiet=true, algorithm=:iv,
+        giv(df, formula, :id, :t, :S; guess=guess, quiet=true, algorithm=:iv,
             solver_options=solver, kw...)
     catch
         return (false, missing, missing, missing)
@@ -97,4 +98,112 @@ function run_mc()
     end
 end
 
-run_mc()
+# ---------------------------------------------------------------------------
+# CUE-favorable scenario with oracle-weight limit
+#
+# Worst-case efficiency cost of fixed proxy weights in a DGP deliberately built
+# to favor CUE, plus the oracle limit (true precisions 1/σᵤᵢ²).
+#
+# PRE-REGISTERED parameterization — chosen against the contamination ratio
+# ζᵢ²·var(p̃)/σᵤᵢ² ONLY (target: elasticity term comparable to idio variance for
+# the elastic entities), NEVER against estimator output:
+#   N=10, T=100, K=2
+#   h=0.5        concentrated sizes
+#   σᵤcurv=0.5   real σᵤ heterogeneity (large entities much less volatile)
+#   M=2, σζ=1.5  small mean elasticity (ζ̄ = 1/M = 0.5) with large spread
+#   ushare=0.8   idiosyncratic shocks dominate the residualized price
+#   ζalign=-1    largest ζ assigned to smallest-σᵤ entities (proxy misweights hardest)
+#
+# Estimated specification: 5 category elasticities, each category pooling two
+# entities at opposite size extremes ((1,10),(2,9),...). With per-entity
+# elasticities the system is one-moment-per-entity exactly identified and every
+# precision weighting shares the same roots (verified: CUE ≡ proxy ≡ oracle to
+# solver tolerance), so weighting can only matter when moments pool entities —
+# exactly the Treasury setting (9–13 category elasticities over 57 sectors).
+# Extreme-size pairing maximizes within-moment precision heterogeneity, the
+# channel proxy weights can get wrong. True category ζ = S-weighted mean of the
+# anti-aligned entity draws within the pair, recentred so S'ζ = 1/M; q is rebuilt
+# from the simulated primitives (q = u + Λη − ζ_g·p), which keeps the DGP
+# internally consistent since p = M·S'(u + Λη).
+#
+# Realized contamination at the frozen params under the category ζ (400 reps,
+# computed from DGP primitives with η controlled, p̃ = M·S'u so
+# var(p̃) = M²·ΣSⱼ²σᵤⱼ²; no estimation involved): per-rep max mean 2.32
+# [q10 1.09, q90 3.81], per-rep median mean 0.37, share of entity-reps above
+# 1.0 = 0.17 — elasticity term comparable to (or exceeding) idio variance for
+# the elastic entities; target met, parameters frozen before the estimator arms.
+# ---------------------------------------------------------------------------
+const CUEFAV_PARAMS = (N=10, T=100, K=2, h=0.5, σᵤcurv=0.5, M=2.0, σζ=1.5, ushare=0.8, ζalign=-1)
+const CUEFAV_NREP = 400
+const CUEFAV_PAIR = Dict(1 => 1, 10 => 1, 2 => 2, 9 => 2, 3 => 3, 8 => 3, 4 => 4, 7 => 4, 5 => 5, 6 => 5)
+const CUEFAV_FORMULA = @formula(q + grp & endog(p) ~ fe(id) & (η1 + η2) + 0)
+
+"""Simulate reps keeping the DGP primitives needed for the oracle arm and the
+contamination report. Entity order in estimation is sorted-string id order
+("1","10","2",...,"9"), so the per-entity oracle precisions are permuted
+accordingly; category coefficients/weights are in sorted group order g1..g5."""
+function simulate_cuefav(params, nrep, seed)
+    Random.seed!(seed)
+    N = params.N
+    perm = sortperm(string.(1:N))
+    map(1:nrep) do _
+        m = SimModel(; params...)
+        df = DataFrame(m.data)
+        su = copy(m.param.σᵤvec)            # final (rescaled) true σᵤ, numeric entity order
+        S = m.param.constS
+        ζdraw = collect(skipmissing(m.data.ζ))
+        masks = [[CUEFAV_PAIR[i] == g for i in 1:N] for g in 1:5]
+        ζg = [sum(S[mk] .* ζdraw[mk]) / sum(S[mk]) for mk in masks]
+        ζent = [ζg[CUEFAV_PAIR[i]] for i in 1:N]
+        shift = (1 / params.M - sum(S .* ζent)) / sum(S)
+        ζg .+= shift
+        ζent .+= shift
+        idnum = parse.(Int, df.id)
+        df.grp = string.("g", getindex.(Ref(CUEFAV_PAIR), idnum))
+        df.ζ = ζent[idnum]
+        df.q = df.u .+ df.λ1 .* df.η1 .+ df.λ2 .* df.η2 .- df.ζ .* df.p
+        varp = params.M^2 * sum(S .^ 2 .* su .^ 2)
+        Sg = [sum(S[mk]) for mk in masks]
+        (; df, Sg, trueagg=sum(Sg .* ζg), ζg,
+            oracle_w=1 ./ su[perm] .^ 2, contamination=ζent .^ 2 .* varp ./ su .^ 2)
+    end
+end
+
+function cuefav_summarize(results)
+    conv = [r[1] for r in results]
+    ok = findall(conv)
+    err = [results[i][2] for i in ok]
+    cov = [results[i][3] for i in ok]
+    return (convrate=mean(conv), bias=mean(err), sd=std(err), cover=mean(cov))
+end
+
+function run_cue_favorable_mc()
+    println("=== CUE-favorable scenario with oracle limit, $(CUEFAV_NREP) reps ===")
+    reps = simulate_cuefav(CUEFAV_PARAMS, CUEFAV_NREP, 42)
+    contam = reduce(vcat, r.contamination for r in reps)
+    permax = [maximum(r.contamination) for r in reps]
+    permed = [median(r.contamination) for r in reps]
+    @printf("contamination ζᵢ²var(p̃)/σᵤᵢ²: per-rep max mean %.2f [q10 %.2f, q90 %.2f], per-rep median mean %.2f, share>1 %.2f\n\n",
+        mean(permax), quantile(permax, 0.1), quantile(permax, 0.9), mean(permed), mean(contam .> 1))
+    arms = [
+        ("CUE/true",    r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA)),
+        ("proxy/true",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:proxy)),
+        ("proxy/ones",  r -> one_fit(r.df, r.Sg, r.trueagg; guess=ones(5), solver=SOLVER_EFF, formula=CUEFAV_FORMULA, precision_mode=:proxy)),
+        ("oracle/true", r -> one_fit(r.df, r.Sg, r.trueagg; guess=r.ζg, solver=SOLVER_EFF, formula=CUEFAV_FORMULA,
+            precision_mode=:fixed, precision_weights=r.oracle_w)),
+    ]
+    @printf("%-11s %6s %9s %9s %7s\n", "arm", "conv", "bias", "empSD", "cover")
+    sds = Dict{String,Float64}()
+    for (name, fitter) in arms
+        s = cuefav_summarize([fitter(r) for r in reps])
+        sds[name] = s.sd
+        @printf("%-11s %6.3f %9.4f %9.4f %7.3f\n", name, s.convrate, s.bias, s.sd, s.cover)
+        flush(stdout)
+    end
+    @printf("\nheadline: SD_proxy/SD_oracle = %.3f   SD_proxy/SD_cue = %.3f\n\n",
+        sds["proxy/true"] / sds["oracle/true"], sds["proxy/true"] / sds["CUE/true"])
+end
+
+const MC_SECTIONS = split(get(ENV, "GIV_MC_SECTIONS", "base,cue_favorable"), ",")
+"base" in MC_SECTIONS && run_mc()
+"cue_favorable" in MC_SECTIONS && run_cue_favorable_mc()

@@ -14,6 +14,7 @@
     DIST::TD = isinf(ν) ? Normal(0, 1.0) : TDist(ν) * sqrt((ν - 2) / ν) * 1.0
     σp = 2.0
     σζ = 1.0
+    ζalign::Int64 = 0 # 0: ζ drawn independently of σᵤ; -1: largest ζ draws assigned to smallest-σᵤ entities (anti-aligned); +1: aligned
     missingperc = 0.0 # percentage of missing values in the data
 end
 
@@ -107,6 +108,12 @@ function SimModel(; kwargs...)
     @unpack_SimParam param
 
     ζ = rand(Normal(0, σζ), N)
+    if ζalign != 0
+        # reorder the draws against the σᵤ ranking (ranks are invariant to the
+        # uniform rescalings of σᵤvec below); demeaning/shifting afterwards keeps S'ζ = 1/M
+        idx = sortperm(σᵤvec; rev=(ζalign > 0))
+        ζ[idx] = sort(ζ; rev=true)
+    end
     ζ .-= sum(ζ .* constS)
     ζ .+= 1 / M
 
@@ -182,6 +189,7 @@ Generate multiple simulated panel datasets for Monte Carlo experiments.
   - `ushare::Float64 = 0.2`: Share of idiosyncratic shocks in total variation (if K>0)
   - `σᵤcurv::Float64 = 0.1`: Curvature parameter for size-dependent shock volatility
   - `ν::Float64 = Inf`: Degrees of freedom for t-distribution (Inf = Normal distribution)
+  - `ζalign::Int = 0`: Alignment of elasticities with shock volatilities (0 = independent draw; -1 = largest ζ assigned to smallest-σᵤ entities; +1 = aligned)
   - `missingperc::Float64 = 0.0`: Percentage of missing values to introduce
 
 # Keyword Arguments
