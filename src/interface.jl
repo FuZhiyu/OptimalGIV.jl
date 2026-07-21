@@ -321,18 +321,71 @@ end
 @doc """
     giv(df, formula, id, t, weight; <keyword arguments>)
 
-Estimate a GIV model from panel data.
+Estimate the granular instrumental-variables model
 
-`precision_weights` accepts `:twostep` (default), `:raw_onestep`, `:cue`,
-or an entity-length vector of fixed precisions. Omitting it selects `:twostep`
-and emits a one-time notice unless `quiet = true`.
+```math
+q_{it} + p_t C_{it}'ζ = X_{it}'β + u_{it}
+```
 
-Use `complete_coverage` only to override automatic coverage detection, `guess` to
-provide starting coefficients, and `save` or `save_df` to retain post-estimation
-data. Additional NLsolve options may be passed in `solver_options`.
+from panel data, using market clearing and cross-entity residual moment
+conditions.
 
-Returns a `GIVModel`; use `coeftable`, `endog_coef`, `exog_coef`,
-`agg_coef`, and `vcov` for the main results.
+# Arguments
+
+- `df`: Input panel data.
+- `formula`: A StatsModels formula of the form
+  `q + interactions & endog(p) ~ exogenous_controls`. Use `fe(...)` for
+  absorbed fixed effects and `pc(k)` for `k` common residual factors.
+- `id`: Entity-identifier column.
+- `t`: Time-identifier column. Together, `id` and `t` must identify rows.
+- `weight`: Nonnegative entity-size or market-share column.
+
+# Keyword arguments
+
+- `precision_weights = :twostep`: Precision weighting for the GIV moments:
+  - `:twostep` first uses `1 / var(uq_i)`, then re-estimates once using
+    precisions computed from the first-step residuals. This is the default.
+  - `:raw_onestep` performs only the first fixed-weight solve.
+  - `:cue` updates residual-based precisions during estimation; this was the
+    previous default.
+  - An entity-length vector supplies custom fixed precisions in sorted entity
+    order.
+  Omitting this keyword selects `:twostep` and emits a one-time notice unless
+  `quiet = true`.
+- `guess = nothing`: Starting value for the endogenous coefficients. Accepts a
+  number, a coefficient vector, or a dictionary keyed by coefficient name. OLS
+  starting values are used when omitted.
+- `algorithm = :iv`: Estimation algorithm. `:iv` is the standard estimator;
+  `:iv_twopass` is its slower reference implementation. `:debiased_ols` and
+  `:scalar_search` are specialized estimators that require complete coverage.
+- `exclude_pairs = Dict()`: Entity pairs to exclude from the moment conditions,
+  supplied as `Dict(i => [j, ...])`.
+- `complete_coverage = nothing`: Whether the sample covers the full market.
+  Coverage is detected automatically when omitted; set this only to override
+  detection.
+- `quiet = false`: Suppress informational messages and warnings.
+- `save = :none`: Retain `:residuals`, `:fe`, `:all`, or neither (`:none`).
+- `save_df = false`: Store the processed estimation data in the returned model.
+- `return_vcov = true`: Compute variance estimates. Analytical standard errors
+  are unavailable for specifications containing `pc(k)`.
+- `contrasts = Dict()`: StatsModels contrast specifications.
+- `tol = 1e-6`: Tolerance used by estimation and fixed-effect absorption.
+- `iterations = 100`: Maximum solver iterations.
+- `solver_options`: Additional options passed to NLsolve as a named tuple.
+- `pca_option`: Options passed to HeteroPCA for specifications with `pc(k)`.
+
+# Returns
+
+A `GIVModel`. The main result accessors are:
+
+- `coef`, `stderror`, `vcov`, `confint`, and `coeftable` for the full model;
+- `endog_coef`, `endog_vcov`, `exog_coef`, and `exog_vcov` for coefficient
+  blocks;
+- `agg_coef` for the aggregate or average elasticity.
+
+Useful fields include `model.converged`, `model.coefdf`,
+`model.residual_variance`, and, when requested, `model.df`, `model.fe`, and
+`model.residual_df`.
 """ giv
 
 """
