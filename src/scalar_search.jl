@@ -30,6 +30,7 @@ function estimate_giv(
     method=:trust_region,
     autodiff=:central,
     jacobian=:analytic,  # analytic Jacobian is not applicable to :scalar_search; absorb & ignore
+    pc_solver=:onestep,  # nested PC solve is not applicable to :scalar_search; absorb & ignore
     kwargs...,
 )
     tol = solver_options.ftol

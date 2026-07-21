@@ -38,6 +38,7 @@ export @formula, endog, pc
 export giv,
     estimate_giv, create_coef_dataframe, preprocess_dataframe, get_coefnames, build_error_function, simulate_data, extract_raw_matrices,
     create_observation_index, create_exclusion_matrix, vector_to_matrix, matrix_to_vector,
+    nested_pc_solve,
     NonfiniteMomentError, diagnose_nonfinite_moment
 export coef,
     endog_coef,

@@ -119,7 +119,14 @@ It returns a `GIVModel` object containing the estimated coefficients, standard e
     PCs, `:debiased_ols`) the solver falls back to the `autodiff` path automatically.
     `jacobian = :autodiff` forces the finite-difference/ForwardDiff Jacobian everywhere
     (debugging escape hatch).
-- `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
+- `pc_solver::Symbol = :onestep`: Solve strategy for internal-PC specs (`pc(k)` in the
+    formula, `n_pcs > 0`). `:onestep` (default) re-extracts the PCs inside every moment
+    evaluation and solves in one NLsolve pass. `:nested` runs a Bai-style iterated-PC
+    outer loop (extract PCs at fixed ζ) around an inner fixed-quadratic ζ solve with the
+    exact analytic Jacobian; applies only to fixed-precision `:iv`/`:iv_twopass` specs and
+    is ignored otherwise. Both converge to the same joint fixed point; `:nested` exists as
+    an alternative solve mechanism — see the nested-PC benchmark for the adoption call.
+- `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca().
     Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
 
 # Output
@@ -209,6 +216,7 @@ function giv(
     method=:trust_region,
     autodiff=:central,
     jacobian=:analytic,
+    pc_solver=:onestep,
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -275,6 +283,7 @@ function giv(
         method=method,
         autodiff=autodiff,
         jacobian=jacobian,
+        pc_solver=pc_solver,
     )
 
     # Two-step efficient GMM (:twostep, the package default): the solve above is
@@ -304,6 +313,7 @@ function giv(
                 method=method,
                 autodiff=autodiff,
                 jacobian=jacobian,
+                pc_solver=pc_solver,
             )
             converged = converged && converged2
         elseif !quiet
