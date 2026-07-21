@@ -51,6 +51,7 @@ using OptimalGIV
 df = simulate_data((; M = 0.5, N = 10), Nsims = 1, seed = 1)[1]
 model = giv(df, @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)), 
             :id, :t, :S; algorithm = :iv, precision_weights = :twostep,
+            complete_coverage = true,
             guess = ones(10) * 2.0)
 ```
 
@@ -70,10 +71,10 @@ model = giv(df, @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)),
 
 The package implements four estimation algorithms, each with different moment conditions:
 
-1. **`:iv` (default)**: Uses E[u_i u_{S,-i}] = 0, O(N) optimized implementation
-2. **`:iv_twopass`**: Same as `:iv` but O(N²) implementation for debugging
+1. **`:iv` (default)**: Uses E[u_i u_{S,-i}] = 0, O(N) optimized implementation; supports complete and incomplete coverage
+2. **`:iv_twopass`**: Same as `:iv` but O(N²) implementation for debugging; supports complete and incomplete coverage
 3. **`:debiased_ols`**: Uses E[u_i C_it p_it] = 1/ζ_St σ_i², requires complete coverage
-4. **`:scalar_search`**: Searches for constant aggregate elasticity, requires balanced panel
+4. **`:scalar_search`**: Searches for constant aggregate elasticity, requires a balanced panel and complete coverage
 
 ### Key Design Patterns
 
@@ -107,10 +108,19 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 #### Solver Configuration
 - Keep dependency-specific solver settings inside `solver_options`; do not add top-level solver or PC-solver keywords
 
+#### IV Weighting and Covariance
+- `:raw_onestep` and custom entity weights use equal period weights and one fixed-weight solve
+- `:twostep` first uses raw entity weights and equal period weights; it computes entity precisions and complete-coverage period weights at the first-step estimate, then freezes both for one second solve
+- `:cue` recomputes every applicable weight at each candidate estimate
+- Fixed-weight IV solves are exact quadratic systems under both coverage regimes
+- Two-step uses the standard sandwich with the same frozen weights as its moments; the optimal covariance formula is reserved for complete-coverage CUE
+- The economic multiplier is `M_t = 1 / ζS_t` for positive aggregate elasticity. The absolute-value clamp is only a finite off-domain iteration rule; final complete-coverage roots must satisfy the positive-domain check
+
 #### Panel Data Handling
 - Unbalanced panels supported for `:iv` algorithms
-- Complete coverage (Σ S_it q_it = 0) required for `:debiased_ols` and `:scalar_search`
-- Auto-detects coverage by checking market clearing in-sample
+- Every estimator entry point requires an explicit `complete_coverage::Bool`
+- Complete coverage is an economic property of the data design; in-sample market clearing validates `true` but does not select the regime
+- Complete coverage is required for `:debiased_ols` and `:scalar_search`; only `:iv` and `:iv_twopass` accept incomplete coverage
 
 #### Error Function Export
 `build_error_function()` returns the raw moment condition function and matrices, enabling:
@@ -130,6 +140,6 @@ Tests are organized by functionality:
 ## Common Pitfalls
 
 1. **Convergence Issues**: Provide good initial guesses, especially under `precision_weights = :cue`
-2. **Coverage Assumptions**: Check `model.complete_coverage` before using `:debiased_ols`
+2. **Coverage Assumptions**: Set `complete_coverage` from the data design; do not infer it from sample adding-up
 3. **Missing Data**: Package doesn't handle missing values - clean data first
 4. **Memory Usage**: Large panels with entity interactions can be memory-intensive

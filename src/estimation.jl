@@ -711,8 +711,8 @@ function solve_vcov(u, S, C, Cp, obs_index; precision=nothing, Mweights=nothing)
     end
 
     # Step 5: period scaling. When the moments were solved under complete coverage,
-    # each period's moments were multiplied by `period_mweights` (evaluated at ζ̂ by
-    # the caller); carry the identical scaling into W so the sandwich matches the
+    # each period's moments were multiplied by `period_mweights` (frozen by the
+    # caller); carry the identical scaling into W so the sandwich matches the
     # estimator actually solved. Without complete coverage (`Mweights === nothing`,
     # no period weights in the moments) the computation is byte-identical to before.
     # The `momweight` row normalization needs no counterpart here: row scaling of an

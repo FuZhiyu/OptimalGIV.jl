@@ -7,10 +7,12 @@ Resolve the entity precision-weight vector for the fixed-weight estimation modes
 - `:cue`  → `nothing`; the moment code keeps updating `1/σᵢ²(ζ)` each evaluation
   (continuously-updated GMM, the pre-v0.3.0 default).
 - `:raw_onestep` → `1/var(uqᵢ)` computed once from the FE/control-residualized flows,
-  so the moment map is a fixed quadratic in ζ under incomplete coverage.
-- `:twostep` → the step-1 `:raw_onestep` weights. The second solve (precisions from the
-  step-1 residuals) is orchestrated by `giv()`; `build_error_function` has no solve
-  loop, so its exported error function is the step-1 raw-weighted moment map.
+  with equal period weights, so the IV moment map is a fixed quadratic in ζ under
+  either coverage regime.
+- `:twostep` → the step-1 `:raw_onestep` weights. `giv()` computes both applicable
+  weight families at the first-step estimate and freezes them for the second solve;
+  `build_error_function` has no solve loop, so its exported error function is the
+  step-1 raw-weighted moment map.
 - An entity-length vector is used directly as fixed precisions in sorted entity order.
 """
 function resolve_precision(precision_weights, uq, obs_index)
@@ -326,8 +328,8 @@ Estimate the granular instrumental-variables model
 q_{it} + p_t C_{it}'ζ = X_{it}'β + u_{it}
 ```
 
-from panel data, using market clearing and cross-entity residual moment
-conditions.
+from panel data using cross-entity residual moment conditions and, under
+complete coverage, market clearing.
 
 # Arguments
 
@@ -341,26 +343,33 @@ conditions.
 
 # Keyword arguments
 
-- `precision_weights = :twostep`: Precision weighting for the GIV moments:
-  - `:twostep` first uses `1 / var(uq_i)`, then re-estimates once using
-    precisions computed from the first-step residuals. This is the default.
-  - `:raw_onestep` performs only the first fixed-weight solve.
-  - `:cue` updates residual-based precisions during estimation; this was the
-    previous default.
+- `precision_weights = :twostep`: Entity precision weighting. For `:iv` and
+  `:iv_twopass`:
+  - `:twostep` first solves with `1 / var(uq_i)` and equal period weights. At
+    the first-step estimate `ζ̃`, it computes residual-based entity precisions
+    and, under complete coverage, period multipliers. It freezes both weight
+    families for one second solve. This is the default.
+  - `:raw_onestep` performs only the first fixed-weight solve, with equal
+    period weights.
+  - `:cue` updates residual-based precisions and complete-coverage period
+    multipliers at every candidate; this was the previous default.
   - An entity-length vector supplies custom fixed precisions in sorted entity
-    order.
+    order and uses equal period weights.
   Omitting this keyword selects `:twostep` and emits a one-time notice unless
-  `quiet = true`.
+  `quiet = true`. The quadratic and period-weight statements above apply to the
+  IV algorithms; the specialized algorithms retain their own moment definitions.
 - `guess = nothing`: Starting value for the endogenous coefficients. Accepts a
   number, a coefficient vector, or a dictionary keyed by coefficient name. OLS
   starting values are used when omitted.
 - `algorithm = :iv`: Estimation algorithm. `:iv` is the standard estimator;
-  `:iv_twopass` is its slower reference implementation. `:debiased_ols` and
-  `:scalar_search` are specialized estimators that require complete coverage.
+  `:iv_twopass` is its slower reference implementation. Both IV algorithms
+  support either coverage regime. `:debiased_ols` and `:scalar_search` are
+  separate estimators that require complete coverage.
 - `exclude_pairs = Dict()`: Entity pairs to exclude from the moment conditions,
   supplied as `Dict(i => [j, ...])`.
 - `complete_coverage`: Required Boolean declaring whether the data design covers
-  the full market. A `true` declaration is validated against market clearing.
+  the full market. A `true` declaration is validated against market clearing,
+  but adding-up alone is not used to infer coverage.
 - `quiet = false`: Suppress informational messages and warnings.
 - `save = :none`: Retain `:residuals`, `:fe`, `:all`, or neither (`:none`).
 - `save_df = false`: Store the processed estimation data in the returned model.
@@ -371,6 +380,17 @@ conditions.
 - `iterations = 100`: Maximum solver iterations.
 - `solver_options`: Additional options passed to NLsolve as a named tuple.
 - `pca_option`: Options passed to HeteroPCA for specifications with `pc(k)`.
+
+For fixed-weight IV, each solve is an exact quadratic system. Raw one-step,
+custom weights, and feasible two-step use the standard sandwich covariance with
+the weights held fixed in their estimating moments. The optimal covariance
+formula is used only for CUE under complete coverage.
+
+Under complete coverage, the economic period multiplier is
+`M_t = 1 / ζS_t` on the maintained positive aggregate-elasticity domain. The
+implementation uses `1 / clamp(abs(ζS_t), sqrt(eps), Inf)` only to keep
+off-domain trial evaluations finite; a nonpositive or near-zero reported root
+is marked non-converged.
 
 # Returns
 
@@ -535,9 +555,14 @@ function create_coef_dataframe(df, formula_schema, coef, id; fekeys=[])
 end
 
 """
-Check if the market clearing condition (adding-up constraint) is satisfied for each time period.
+    check_market_clearing(q, S, obs_index)
 
-Returns `true` when the adding-up constraint is satisfied in every period.
+Return `true` if the market-clearing (adding-up) condition is satisfied in every
+nonempty period, and `false` otherwise.
+
+This is a diagnostic and a validator for `complete_coverage=true`; passing the
+check does not by itself establish that the sampled entities cover the whole
+market.
 """
 function check_market_clearing(q, S, obs_index)
     for t in 1:obs_index.T
@@ -571,8 +596,9 @@ Export the error function for the GIV model. This function is useful for debuggi
 
 For `build_error_function`, the default `precision_weights = :twostep` returns the
 step-1 `:raw_onestep` moment map with precisions `1/var(uqᵢ)`, because this helper
-does not run the second solve. Pass `precision_weights = :cue` for the continuously
-updated map or an entity-length vector for a custom fixed map.
+does not run the second solve. Its period weights are therefore equal. Pass
+`precision_weights = :cue` for the continuously updated map or an entity-length
+vector for a custom fixed map. As with `giv`, `complete_coverage` is required.
 
 """
 function build_error_function(df,
