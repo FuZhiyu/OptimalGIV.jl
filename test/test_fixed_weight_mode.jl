@@ -1,4 +1,4 @@
-using Test, OptimalGIV, Random, LinearAlgebra, Logging
+using Test, OptimalGIV, Random, LinearAlgebra, Logging, Statistics
 using OptimalGIV: build_error_function, resolve_precision, calculate_entity_variance,
     aggregate_elasticity_in_domain, check_market_clearing, create_observation_index,
     estimate_giv, solve_vcov, moment_conditions, period_mweights
@@ -250,31 +250,37 @@ end
 # same vector into its moments, Jacobian, and sandwich vcov.
 # ---------------------------------------------------------------------------
 
-# Independent O(N²) reference: build the period-scaled sandwich A/B directly from
-# the within-period pair loop, mirroring solve_vcov's math (same A/(T-1), B/T
-# normalizations) without its pair-array machinery.
+# Independent O(N²) reference: build the actual masked period scores and
+# moment-by-parameter bread directly from the within-period pair loop, without
+# using the production pair catalog or score constructor.
 function _reference_sandwich_vcov(u, S, C, Cp, obs_index, prec, Mw)
     Nmom = size(C, 2)
     T = obs_index.T
-    σu² = calculate_entity_variance(u, obs_index)
-    A = zeros(Nmom, Nmom)
-    B = zeros(Nmom, Nmom)
+    scores = zeros(Nmom, T)
+    weightsum = zeros(Nmom, T)
+    Gt = zeros(Nmom, Nmom, T)
     for t in 1:T
         r = obs_index.start_indices[t]:obs_index.end_indices[t]
         mw = isnothing(Mw) ? 1.0 : Mw[t]
         for ii in r, jj in (ii+1):last(r)
             i, j = obs_index.ids[ii], obs_index.ids[jj]
-            w = [mw * (prec[i] * S[jj] * C[ii, k] + prec[j] * S[ii] * C[jj, k]) for k in 1:Nmom]
+            obs_index.exclpairs[i, j] && continue
+            w = [prec[i] * S[jj] * C[ii, k] + prec[j] * S[ii] * C[jj, k] for k in 1:Nmom]
             d = [u[jj] * Cp[ii, k] + u[ii] * Cp[jj, k] for k in 1:Nmom]
-            A .+= d * w'                     # (D'W)[k, l] summed pair by pair
-            B .+= (σu²[i] * σu²[j]) .* (w * w')  # (W' diag(V) W) summed pair by pair
+            scores[:, t] .+= mw .* w .* (u[ii] * u[jj])
+            weightsum[:, t] .+= w
+            Gt[:, :, t] .+= mw .* (w * d')
         end
     end
-    A ./= (T - 1)
-    B ./= T
-    B = Symmetric(B + B') / 2
-    invA = inv(A)
-    Σ = invA * B * invA' / T
+    momweight = vec(sum(abs.(weightsum); dims=2))
+    momweight ./= sum(momweight)
+    scores ./= reshape(momweight, :, 1)
+    Gt ./= reshape(momweight, :, 1, 1)
+    G = dropdims(mean(Gt; dims=3); dims=3)
+    centered_scores = scores .- mean(scores; dims=2)
+    B = centered_scores * centered_scores' / T
+    invG = inv(G)
+    Σ = invG * B * invG' / T
     return Symmetric(Σ + Σ') / 2
 end
 

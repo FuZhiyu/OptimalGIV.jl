@@ -174,6 +174,7 @@ function giv(
             @warn "Two-step step 1 (:raw_onestep) did not converge; skipping step 2 and returning the non-converged step-1 estimates."
         end
     end
+    ζ̂_free = ζ̂
     ζ̂ = isempty(pin_idx) ? ζ̂ : expand_pinned(ζ̂, keep_idx, Nζ)
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
@@ -181,16 +182,17 @@ function giv(
 
     û = uq + uCp * ζ̂
     if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
-        # Vcov routing rule: the sandwich `solve_vcov` is the default everywhere;
-        # `solve_optimal_vcov` only when the weights are exact CUE
-        # (`precision_weights = :cue`) AND coverage is complete.
+        # Vcov routing rule for pairwise IV: all-pair complete-coverage CUE keeps
+        # the maintained optimal-information formula. Incomplete CUE and any CUE
+        # exclusion/pinning use the masked empirical sandwich with the full
+        # candidate-dependent Jacobian. Fixed IV always uses the same frozen
+        # entity/period bundle as its estimating moments.
         if isnothing(precisionvec)
-            if complete_coverage && isempty(pin_idx)
+            if complete_coverage && isempty(pin_idx) && !any(obs_index.exclpairs)
                 σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
             else
-                # without complete coverage of the market, we do not have aggregate elasticity
-                # and hence it's not exactly optimal
-                σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index)
+                σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
+                    ζ=ζ̂_free, complete_coverage=complete_coverage)
             end
         else
             # Fixed-weight SEs use the same frozen entity and period weights as the

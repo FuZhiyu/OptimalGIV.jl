@@ -396,7 +396,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
     end
 
     Nmom = length(ζ)
-    N, T = obs_index.N, obs_index.T
+    T = obs_index.T
 
     # Calculate residuals
     u = q + Cp * ζ
@@ -599,22 +599,35 @@ function aggregate_elasticity_in_domain(ζ, C, S, obs_index)
     return all(>(sqrt(eps(eltype(ζS)))), ζS)
 end
 
+"""
+    admissible_pair_indices(obs_index)
+
+Return the co-occurring unordered entity pairs retained by the estimator's
+exclusion mask. Both sandwich scores and the complete-coverage optimal route use
+this pair catalog so covariance construction cannot silently restore excluded
+moments.
+"""
+function admissible_pair_indices(obs_index)
+    present = obs_index.entity_obs_indices .> 0
+    cooccurs = present * transpose(present)
+    inds = findall(triu((cooccurs .> zero(eltype(cooccurs))) .& .!obs_index.exclpairs, 1))
+    return [I[1] for I in inds], [I[2] for I in inds]
+end
+
 function solve_optimal_vcov(ζ, u, S, C, obs_index)
+    any(obs_index.exclpairs) && throw(ArgumentError(
+        "`solve_optimal_vcov` requires the all-pair complete-coverage CUE design; " *
+        "excluded pairs must use the masked empirical sandwich."))
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
     ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Mvec = 1 ./ ζSvec
 
-    # Step 1: Efficiently identify all unique entity pairs that co-occur
-    # 1) Build presence‐matrix
-    M = obs_index.entity_obs_indices .> 0   # N×T BitMatrix
-    # 2) Compute co‐occurrence counts
-    co = M * transpose(M)                   # N×N dense Int matrix
-    # 3) findall gives you CartesianIndex's for each true entry
-    inds = findall(triu(co .> zero(eltype(co)), 1))       # CartesianIndices of every non-zero count in the upper triangle
-    pair_i = [I[1] for I in inds]
-    pair_j = [I[2] for I in inds]
+    # Step 1: identify the estimator's admissible co-occurring pairs. The guard
+    # above makes this the maintained all-pair route, while sharing the catalog
+    # implementation with the masked sandwich.
+    pair_i, pair_j = admissible_pair_indices(obs_index)
     # Number of unique entity pairs
     n_pairs = length(pair_i)
 
@@ -660,89 +673,122 @@ function solve_optimal_vcov(ζ, u, S, C, obs_index)
     return σu²vec, Σζ
 end
 
+"""
+    masked_period_scores(u, S, C, Cp, obs_index, precision, Mweights; bread=false)
 
-
-function solve_vcov(u, S, C, Cp, obs_index; precision=nothing, Mweights=nothing)
+Construct the actual period scores from the estimator's admissible pairs and
+weight bundle. `precision` and `Mweights` are already resolved for the candidate:
+fixed IV passes its frozen bundle, while CUE passes candidate-updated values. The
+returned score matrix includes the same period and `momweight` normalization as
+the IV moment kernel. With `bread=true`, also return the exact fixed-weight
+Jacobian in moment-by-parameter orientation, normalized by `1 / T`.
+"""
+function masked_period_scores(u, S, C, Cp, obs_index, precision, Mweights; bread=false)
     Nmom = size(C, 2)
-    N, T = obs_index.N, obs_index.T
-    σu²vec = calculate_entity_variance(u, obs_index)
-
-    # Step 1: Efficiently identify all unique entity pairs that co-occur
-    # 1) Build presence‐matrix
-    M = obs_index.entity_obs_indices .> 0   # N×T BitMatrix
-    # 2) Compute co‐occurrence counts
-    co = M * transpose(M)                   # N×N dense Int matrix
-    # 3) findall gives you CartesianIndex's for each true entry
-    inds = findall(triu(co .> zero(eltype(co)), 1))       # CartesianIndices of every non-zero count in the upper triangle
-    pair_i = [I[1] for I in inds]
-    pair_j = [I[2] for I in inds]
-    # Number of unique entity pairs
+    T = obs_index.T
+    pair_i, pair_j = admissible_pair_indices(obs_index)
     n_pairs = length(pair_i)
+    TT = promote_type(eltype(u), eltype(S), eltype(C), eltype(Cp), eltype(precision))
+    scores = zeros(TT, Nmom, T)
+    weightsum = zeros(TT, Nmom, T)
+    Gt = bread ? zeros(TT, Nmom, Nmom, T) : nothing
 
-    # Step 2: Initialize arrays for computation
-    Vdiag = zeros(n_pairs)
-    W = zeros(n_pairs, Nmom, T)
-    D = zeros(n_pairs, Nmom, T)
-
-    # Step 3: Compute Vdiag for all pairs
-    for idx in 1:n_pairs
-        i, j = pair_i[idx], pair_j[idx]
-        Vdiag[idx] = σu²vec[i] * σu²vec[j]
-    end
-
-    # W uses the estimation weights: CUE (`precision === nothing`) uses 1/σu², the
-    # fixed-weight mode carries in the same fixed precisions used in the moments so
-    # the sandwich SEs are consistent with the estimator actually solved.
-    prec = isnothing(precision) ? 1 ./ σu²vec : precision
-    # Step 4: Compute W matrix (the moment weights applied to each pair)
     for t in 1:T
+        Wt = zeros(TT, n_pairs, Nmom)
+        ht = zeros(TT, n_pairs)
+        Dt = bread ? zeros(TT, n_pairs, Nmom) : nothing
         for idx in 1:n_pairs
             i, j = pair_i[idx], pair_j[idx]
             i_pos = obs_index.entity_obs_indices[i, t]
             j_pos = obs_index.entity_obs_indices[j, t]
-            if i_pos == 0 || j_pos == 0
-                continue
-            end
+            (i_pos == 0 || j_pos == 0) && continue
+            ht[idx] = u[i_pos] * u[j_pos]
             for k in 1:Nmom
-                W[idx, k, t] = prec[i] * S[j_pos] * C[i_pos, k] + prec[j] * S[i_pos] * C[j_pos, k]
-                D[idx, k, t] = u[j_pos] * Cp[i_pos, k] + u[i_pos] * Cp[j_pos, k]
+                Wt[idx, k] = precision[i] * S[j_pos] * C[i_pos, k] +
+                             precision[j] * S[i_pos] * C[j_pos, k]
+                if bread
+                    Dt[idx, k] = Cp[i_pos, k] * u[j_pos] + u[i_pos] * Cp[j_pos, k]
+                end
             end
         end
+        scores[:, t] .= Wt' * ht
+        weightsum[:, t] .= vec(sum(Wt; dims=1))
+        bread && (Gt[:, :, t] .= Wt' * Dt)
     end
 
-    # Step 5: period scaling. When the moments were solved under complete coverage,
-    # each period's moments were multiplied by `period_mweights` (frozen by the
-    # caller); carry the identical scaling into W so the sandwich matches the
-    # estimator actually solved. Without complete coverage (`Mweights === nothing`,
-    # no period weights in the moments) the computation is byte-identical to before.
-    # The `momweight` row normalization needs no counterpart here: row scaling of an
-    # exactly-identified system cancels in A⁻¹BA⁻ᵀ, as does any global rescaling of
-    # Mweights — only relative period weights matter.
-    if !isnothing(Mweights)
-        @views for t in 1:T
-            W[:, :, t] .*= Mweights[t]
+    momweight = vec(sum(abs.(weightsum); dims=2))
+    momweight ./= sum(momweight)
+    for t in 1:T
+        period_weight = isnothing(Mweights) ? one(TT) : Mweights[t]
+        scores[:, t] .*= period_weight ./ momweight
+        if bread
+            @views Gt[:, :, t] .*= period_weight
+            @views Gt[:, :, t] ./= momweight
         end
     end
 
-    # Step 6: final calculation via sandwich formula
-    # Compute sums of D'W and W'Vdiag W across time periods
-    A = zeros(eltype(u), Nmom, Nmom)
-    B = zeros(eltype(u), Nmom, Nmom)
-    @views for t in 1:T
-        Wt = W[:, :, t]
-        Dt = D[:, :, t]
+    G = bread ? dropdims(mean(Gt; dims=3); dims=3) : nothing
+    return scores, G
+end
 
-        A .+= Dt' * Wt
-        B .+= Wt' * (Wt .* Vdiag)
+function _central_difference_jacobian(f, x)
+    fx = f(x)
+    J = zeros(promote_type(eltype(fx), eltype(x)), length(fx), length(x))
+    for k in eachindex(x)
+        h = cbrt(eps(float(eltype(x)))) * max(abs(x[k]), one(eltype(x)))
+        xp, xm = copy(x), copy(x)
+        xp[k] += h
+        xm[k] -= h
+        J[:, k] .= (f(xp) - f(xm)) ./ (2h)
     end
-    A ./= (T - 1) # to match the solve_vcov as the σu²vec is scaled by T-1
-    B ./= T
-    B = Symmetric(B + B') / 2
-    # Sandwich variance
-    invA = inv(A)
-    Σζ = invA * B * invA' / T
-    Σζ = Symmetric(Σζ + Σζ') / 2
-    return σu²vec, Σζ
+    return J
+end
+
+"""
+    solve_vcov(u, S, C, Cp, obs_index; ζ=nothing, complete_coverage=nothing,
+               precision=nothing, Mweights=nothing)
+
+Masked empirical sandwich for the pairwise IV estimating equation. Fixed-weight
+routes use the exact affine Jacobian and the supplied frozen entity/period weight
+bundle. CUE routes require `ζ` and `complete_coverage`; their bread is a centered
+finite-difference derivative of the full candidate-dependent score map, including
+entity precisions, normalized complete-coverage period weights, and `momweight`.
+The meat is the empirical outer-product average of the centered masked period
+scores (centering is immaterial at an exact root and protects approximate solves).
+"""
+function solve_vcov(u, S, C, Cp, obs_index;
+    ζ=nothing,
+    complete_coverage=nothing,
+    precision=nothing,
+    Mweights=nothing,
+)
+    T = obs_index.T
+    σu²vec = calculate_entity_variance(u, obs_index)
+
+    G, scores = if isnothing(precision)
+        (isnothing(ζ) || isnothing(complete_coverage)) && throw(ArgumentError(
+            "CUE sandwich inference requires both `ζ` and `complete_coverage` so the full candidate-dependent Jacobian can be evaluated."))
+        candidate_scores = function (z)
+            uz = u + Cp * (z - ζ)
+            candidate_precision = 1 ./ calculate_entity_variance(uz, obs_index)
+            candidate_Mweights = complete_coverage ? period_mweights(z, C, S, obs_index) : nothing
+            first(masked_period_scores(uz, S, C, Cp, obs_index,
+                candidate_precision, candidate_Mweights))
+        end
+        score_matrix = candidate_scores(ζ)
+        moment_map = z -> vec(mean(candidate_scores(z); dims=2))
+        _central_difference_jacobian(moment_map, ζ), score_matrix
+    else
+        score_matrix, fixed_G = masked_period_scores(u, S, C, Cp, obs_index,
+            precision, Mweights; bread=true)
+        fixed_G, score_matrix
+    end
+
+    centered_scores = scores .- mean(scores; dims=2)
+    B = centered_scores * centered_scores' / T
+    invG = inv(G)
+    Σζ = invG * B * invG' / T
+    return σu²vec, Symmetric(Σζ + Σζ') / 2
 end
 
 """
