@@ -167,7 +167,8 @@ end
             1 ./ σu², Mw; bread=true)
         @test norm(Gfull - Gfixed) / norm(Gfull) > 1e-3
     end
-    @test_throws ArgumentError solve_optimal_vcov(ζ, f.u, f.S, f.C, f.obs_index)
+    _, Σoptimal = solve_optimal_vcov(ζ, f.u, f.S, f.C, f.obs_index)
+    @test all(isfinite, Σoptimal)
 end
 
 @testset "complete-coverage CUE derivative stays on positive branch" begin
@@ -254,6 +255,16 @@ end
         clean_mats.S, clean_mats.C, clean_mats.obs_index)
     @test vcov(clean) == clean_ref
 
+    twostep = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+        algorithm=:iv, complete_coverage=true, precision_weights=:twostep)
+    @test twostep.converged
+    _, twostep_mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:twostep)
+    twostep_u = twostep_mats.uq + twostep_mats.uCp * endog_coef(twostep)
+    _, twostep_ref = solve_optimal_vcov(endog_coef(twostep), twostep_u,
+        twostep_mats.S, twostep_mats.C, twostep_mats.obs_index)
+    @test vcov(twostep) == twostep_ref
+
     exclusions = Dict(1 => [2])
     excluded = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
         algorithm=:iv, complete_coverage=true, precision_weights=:cue,
@@ -262,10 +273,24 @@ end
         algorithm=:iv, complete_coverage=true, precision_weights=:cue,
         exclude_pairs=exclusions)
     excluded_u = excluded_mats.uq + excluded_mats.uCp * endog_coef(excluded)
-    _, excluded_ref = solve_vcov(excluded_u, excluded_mats.S, excluded_mats.C,
-        excluded_mats.uCp, excluded_mats.obs_index; ζ=endog_coef(excluded),
-        complete_coverage=true)
+    _, excluded_ref = solve_optimal_vcov(endog_coef(excluded), excluded_u,
+        excluded_mats.S, excluded_mats.C, excluded_mats.obs_index)
     @test vcov(excluded) == excluded_ref
+
+    excluded_twostep = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+        algorithm=:iv, complete_coverage=true, precision_weights=:twostep,
+        exclude_pairs=exclusions)
+    @test excluded_twostep.converged
+    _, excluded_twostep_mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:twostep,
+        exclude_pairs=exclusions)
+    excluded_twostep_u = excluded_twostep_mats.uq + excluded_twostep_mats.uCp *
+        endog_coef(excluded_twostep)
+    _, excluded_twostep_ref = solve_optimal_vcov(endog_coef(excluded_twostep),
+        excluded_twostep_u, excluded_twostep_mats.S, excluded_twostep_mats.C,
+        excluded_twostep_mats.obs_index)
+    @test vcov(excluded_twostep) == excluded_twostep_ref
+
     excluded_precision = 1 ./ calculate_entity_variance(excluded_u, excluded_mats.obs_index)
     excluded_Mweights = period_mweights(endog_coef(excluded), excluded_mats.C,
         excluded_mats.S, excluded_mats.obs_index)
@@ -296,6 +321,9 @@ end
         fixed_mats.uCp, fixed_mats.C, fixed_mats.S, fixed_mats.obs_index, true,
         Val(:iv); precision=fixed_mats.precision)
     @test vec(mean(fixed_scores; dims=2)) ≈ fixed_kernel rtol=1e-12 atol=1e-12
+    _, fixed_ref = solve_vcov(fixed_u, fixed_mats.S, fixed_mats.C,
+        fixed_mats.uCp, fixed_mats.obs_index; precision=fixed_mats.precision)
+    @test vcov(fixed) == fixed_ref
 
     pin_df, pin_formula, ζtrue = _timevarying_complete_fixture()
     _, _, endog_names, _, _ = OptimalGIV.get_coefnames(pin_df, pin_formula)
@@ -310,7 +338,20 @@ end
         pin_zero=[endog_names[1]])
     ζpin_free = endog_coef(pinned)[2:end]
     pin_u = pin_mats.uq + pin_mats.uCp * ζpin_free
-    _, pin_ref = solve_vcov(pin_u, pin_mats.S, pin_mats.C, pin_mats.uCp,
-        pin_mats.obs_index; ζ=ζpin_free, complete_coverage=true)
+    _, pin_ref = solve_optimal_vcov(ζpin_free, pin_u, pin_mats.S,
+        pin_mats.C, pin_mats.obs_index)
     @test vcov(pinned)[2:end, 2:end] == pin_ref
+
+    pinned_twostep = giv(pin_df, pin_formula, :id, :t, :S; guess=ζtrue,
+        quiet=true, algorithm=:iv, complete_coverage=true,
+        precision_weights=:twostep, pin_zero=[endog_names[1]])
+    @test pinned_twostep.converged
+    @test endog_coef(pinned_twostep)[1] == 0.0
+    @test all(iszero, vcov(pinned_twostep)[1, :]) &&
+          all(iszero, vcov(pinned_twostep)[:, 1])
+    ζpin_twostep_free = endog_coef(pinned_twostep)[2:end]
+    pin_twostep_u = pin_mats.uq + pin_mats.uCp * ζpin_twostep_free
+    _, pin_twostep_ref = solve_optimal_vcov(ζpin_twostep_free,
+        pin_twostep_u, pin_mats.S, pin_mats.C, pin_mats.obs_index)
+    @test vcov(pinned_twostep)[2:end, 2:end] == pin_twostep_ref
 end

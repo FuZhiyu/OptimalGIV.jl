@@ -186,15 +186,18 @@ function giv(
     û = uq + uCp * ζ̂
     if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
         if algorithm in (:iv, :iv_twopass)
-            # Pairwise IV routing: all-pair complete-coverage CUE keeps optimal
-            # information; every other supported IV case uses the masked sandwich.
-            if isnothing(precisionvec)
-                if complete_coverage && isempty(pin_idx) && !any(obs_index.exclpairs)
-                    σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
-                else
-                    σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
-                        ζ=ζ̂_free, complete_coverage=complete_coverage)
-                end
+            # The information formula applies to complete-coverage CUE and to
+            # a successfully completed frozen two-step solve. Pinned
+            # coefficients remain exactly zero by evaluating the formula on the
+            # reduced free-column system.
+            use_optimal_vcov = complete_coverage && converged &&
+                aggregate_elasticity_in_domain(ζ̂_free, C_free, S, obs_index) &&
+                (isnothing(precisionvec) || precision_weights === :twostep)
+            if use_optimal_vcov
+                σu²vec, Σζ = solve_optimal_vcov(ζ̂_free, û, S, C_free, obs_index)
+            elseif isnothing(precisionvec)
+                σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
+                    ζ=ζ̂_free, complete_coverage=complete_coverage)
             else
                 σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
                     precision=precisionvec, Mweights=Mweights)

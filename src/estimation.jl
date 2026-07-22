@@ -615,18 +615,13 @@ function admissible_pair_indices(obs_index)
 end
 
 function solve_optimal_vcov(ζ, u, S, C, obs_index)
-    any(obs_index.exclpairs) && throw(ArgumentError(
-        "`solve_optimal_vcov` requires the all-pair complete-coverage CUE design; " *
-        "excluded pairs must use the masked empirical sandwich."))
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
     σu²vec = calculate_entity_variance(u, obs_index)
     ζSvec = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     Mvec = 1 ./ ζSvec
 
-    # Step 1: identify the estimator's admissible co-occurring pairs. The guard
-    # above makes this the maintained all-pair route, while sharing the catalog
-    # implementation with the masked sandwich.
+    # Step 1: identify the estimator's admissible co-occurring pairs.
     pair_i, pair_j = admissible_pair_indices(obs_index)
     # Number of unique entity pairs
     n_pairs = length(pair_i)
