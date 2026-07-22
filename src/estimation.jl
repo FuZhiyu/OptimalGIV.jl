@@ -674,6 +674,53 @@ function solve_optimal_vcov(ζ, u, S, C, obs_index)
 end
 
 """
+    solve_specialized_vcov(u, S, C, Cp, obs_index; precision=nothing)
+
+Compatibility covariance retained for the no-exclusion `:debiased_ols` route
+until that estimator receives its own covariance derivation. This is the
+pre-existing model-diagonal formula and must not be used for pairwise IV, whose
+masked empirical sandwich is `solve_vcov`.
+"""
+function solve_specialized_vcov(u, S, C, Cp, obs_index; precision=nothing)
+    any(obs_index.exclpairs) && throw(ArgumentError(
+        "`exclude_pairs` is unsupported for specialized estimators whose moment maps do not consume the pair mask."))
+    Nmom, T = size(C, 2), obs_index.T
+    σu²vec = calculate_entity_variance(u, obs_index)
+    pair_i, pair_j = admissible_pair_indices(obs_index)
+    n_pairs = length(pair_i)
+    Vdiag = [σu²vec[pair_i[idx]] * σu²vec[pair_j[idx]] for idx in 1:n_pairs]
+    W = zeros(eltype(u), n_pairs, Nmom, T)
+    D = zeros(eltype(u), n_pairs, Nmom, T)
+    prec = isnothing(precision) ? 1 ./ σu²vec : precision
+
+    for t in 1:T, idx in 1:n_pairs
+        i, j = pair_i[idx], pair_j[idx]
+        i_pos = obs_index.entity_obs_indices[i, t]
+        j_pos = obs_index.entity_obs_indices[j, t]
+        (i_pos == 0 || j_pos == 0) && continue
+        for k in 1:Nmom
+            W[idx, k, t] = prec[i] * S[j_pos] * C[i_pos, k] +
+                           prec[j] * S[i_pos] * C[j_pos, k]
+            D[idx, k, t] = u[j_pos] * Cp[i_pos, k] + u[i_pos] * Cp[j_pos, k]
+        end
+    end
+
+    A = zeros(eltype(u), Nmom, Nmom)
+    B = zeros(eltype(u), Nmom, Nmom)
+    @views for t in 1:T
+        Wt, Dt = W[:, :, t], D[:, :, t]
+        A .+= Dt' * Wt
+        B .+= Wt' * (Wt .* Vdiag)
+    end
+    A ./= T - 1
+    B ./= T
+    B = Symmetric(B + B') / 2
+    invA = inv(A)
+    Σζ = invA * B * invA' / T
+    return σu²vec, Symmetric(Σζ + Σζ') / 2
+end
+
+"""
     masked_period_scores(u, S, C, Cp, obs_index, precision, Mweights; bread=false)
 
 Construct the actual period scores from the estimator's admissible pairs and
@@ -744,15 +791,77 @@ function _central_difference_jacobian(f, x)
     return J
 end
 
+function _positive_domain_jacobian(f, x, C, S, obs_index)
+    T, K = obs_index.T, length(x)
+    aggregate_loadings = zeros(promote_type(eltype(x), eltype(C), eltype(S)), T, K)
+    for t in 1:T
+        r = obs_index.start_indices[t]:obs_index.end_indices[t]
+        aggregate_loadings[t, :] .= C[r, :]' * S[r]
+    end
+    aggregate_elasticity = aggregate_loadings * x
+    boundary = sqrt(eps(float(eltype(aggregate_elasticity))))
+    all(>(boundary), aggregate_elasticity) || throw(DomainError(
+        minimum(aggregate_elasticity),
+        "complete-coverage CUE covariance requires aggregate elasticity strictly above the clamp boundary."))
+
+    fx = f(x)
+    J = zeros(promote_type(eltype(fx), eltype(x)), length(fx), K)
+    for k in eachindex(x)
+        scale = max(abs(x[k]), one(eltype(x)))
+        h0 = cbrt(eps(float(eltype(x)))) * scale
+        positive_room = Inf
+        negative_room = Inf
+        for t in 1:T
+            loading = aggregate_loadings[t, k]
+            margin = aggregate_elasticity[t] - boundary
+            if loading < 0
+                positive_room = min(positive_room, margin / -loading)
+            elseif loading > 0
+                negative_room = min(negative_room, margin / loading)
+            end
+        end
+
+        if positive_room > h0 && negative_room > h0
+            xp, xm = copy(x), copy(x)
+            xp[k] += h0
+            xm[k] -= h0
+            J[:, k] .= (f(xp) - f(xm)) ./ (2h0)
+            continue
+        end
+
+        # A default symmetric step would leave the maintained positive branch.
+        # Use the side with more admissible room and a second-order one-sided
+        # difference; its far point stays strictly inside the smooth domain.
+        forward = positive_room >= negative_room
+        room = forward ? positive_room : negative_room
+        h = min(h0, 0.4room)
+        h > eps(float(eltype(x))) * scale || throw(DomainError(
+            room, "aggregate elasticity is too close to the clamp boundary for a stable covariance derivative."))
+        x1, x2 = copy(x), copy(x)
+        if forward
+            x1[k] += h
+            x2[k] += 2h
+            J[:, k] .= (-3 .* fx + 4 .* f(x1) - f(x2)) ./ (2h)
+        else
+            x1[k] -= h
+            x2[k] -= 2h
+            J[:, k] .= (3 .* fx - 4 .* f(x1) + f(x2)) ./ (2h)
+        end
+    end
+    return J
+end
+
 """
     solve_vcov(u, S, C, Cp, obs_index; ζ=nothing, complete_coverage=nothing,
                precision=nothing, Mweights=nothing)
 
 Masked empirical sandwich for the pairwise IV estimating equation. Fixed-weight
 routes use the exact affine Jacobian and the supplied frozen entity/period weight
-bundle. CUE routes require `ζ` and `complete_coverage`; their bread is a centered
-finite-difference derivative of the full candidate-dependent score map, including
-entity precisions, normalized complete-coverage period weights, and `momweight`.
+bundle. CUE routes require `ζ` and `complete_coverage`; their bread differentiates
+the full candidate-dependent score map, including entity precisions, normalized
+complete-coverage period weights, and `momweight`. Complete coverage uses a
+positive-domain-aware central or second-order one-sided difference; incomplete
+coverage uses a centered difference.
 The meat is the empirical outer-product average of the centered masked period
 scores (centering is immaterial at an exact root and protects approximate solves).
 """
@@ -777,7 +886,10 @@ function solve_vcov(u, S, C, Cp, obs_index;
         end
         score_matrix = candidate_scores(ζ)
         moment_map = z -> vec(mean(candidate_scores(z); dims=2))
-        _central_difference_jacobian(moment_map, ζ), score_matrix
+        cue_G = complete_coverage ?
+                _positive_domain_jacobian(moment_map, ζ, C, S, obs_index) :
+                _central_difference_jacobian(moment_map, ζ)
+        cue_G, score_matrix
     else
         score_matrix, fixed_G = masked_period_scores(u, S, C, Cp, obs_index,
             precision, Mweights; bread=true)

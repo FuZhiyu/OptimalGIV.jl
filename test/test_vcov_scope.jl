@@ -1,7 +1,8 @@
 using Test, OptimalGIV, Random, LinearAlgebra, ForwardDiff, Statistics
 using OptimalGIV: calculate_entity_variance, create_observation_index,
     masked_period_scores, mean_moment_conditions, moment_conditions,
-    period_mweights, solve_optimal_vcov, solve_vcov
+    period_mweights, solve_optimal_vcov, solve_specialized_vcov, solve_vcov,
+    _central_difference_jacobian, _positive_domain_jacobian
 using DataFrames, CategoricalArrays
 
 function _vcov_scope_fixture(; excluded=false)
@@ -21,6 +22,25 @@ function _vcov_scope_fixture(; excluded=false)
     Mweights = collect(1.0:T)
     Mweights ./= sum(Mweights)
     return (; u, Cp, C, S, precision, Mweights, obs_index)
+end
+
+function _near_boundary_cue_fixture()
+    Random.seed!(20260723)
+    N, T, K = 3, 4, 2
+    ζ = [1.0, -0.9999999]
+    target_aggregate = [1e-7, 1.0, 0.50000005, 0.20000008]
+    second_loading = (1 .- target_aggregate) ./ 0.9999999
+    panel = DataFrame(
+        id=CategoricalArray(repeat(1:N, T)),
+        t=repeat(1:T; inner=N),
+    )
+    obs_index = create_observation_index(panel, :id, :t)
+    C = reduce(vcat, [repeat(reshape([1.0, second_loading[t]], 1, K), N, 1) for t in 1:T])
+    S = fill(1 / N, N * T)
+    Cp = randn(N * T, K)
+    u = randn(N * T)
+    q = u - Cp * ζ
+    return (; ζ, target_aggregate, q, u, Cp, C, S, obs_index)
 end
 
 # Independent O(N²) construction from the estimating equation. This deliberately
@@ -148,6 +168,67 @@ end
         @test norm(Gfull - Gfixed) / norm(Gfull) > 1e-3
     end
     @test_throws ArgumentError solve_optimal_vcov(ζ, f.u, f.S, f.C, f.obs_index)
+end
+
+@testset "complete-coverage CUE derivative stays on positive branch" begin
+    f = _near_boundary_cue_fixture()
+    aggregate = [dot(f.S[f.obs_index.start_indices[t]:f.obs_index.end_indices[t]],
+        f.C[f.obs_index.start_indices[t]:f.obs_index.end_indices[t], :] * f.ζ)
+        for t in 1:f.obs_index.T]
+    @test aggregate ≈ f.target_aggregate atol=1e-12
+    cue_map = z -> mean_moment_conditions(z, f.q, f.Cp, f.C, f.S,
+        f.obs_index, true, Val(:iv))
+    Gref = ForwardDiff.jacobian(cue_map, f.ζ)
+    Gunsafe = _central_difference_jacobian(cue_map, f.ζ)
+    Gsafe = _positive_domain_jacobian(cue_map, f.ζ, f.C, f.S, f.obs_index)
+    @test norm(Gunsafe - Gref) / norm(Gref) > 0.1
+    @test norm(Gsafe - Gref) / norm(Gref) < 1e-5
+
+    cue_scores = moment_conditions(f.ζ, f.q, f.Cp, f.C, f.S,
+        f.obs_index, true, Val(:iv))
+    cue_scores .-= mean(cue_scores; dims=2)
+    B = cue_scores * cue_scores' / f.obs_index.T
+    Σref = inv(Gref) * B * inv(Gref)' / f.obs_index.T
+    _, Σ = solve_vcov(f.u, f.S, f.C, f.Cp, f.obs_index;
+        ζ=f.ζ, complete_coverage=true)
+    @test Σ ≈ Σref rtol=2e-5 atol=1e-8
+end
+
+@testset "specialized estimators preserve no-exclusion vcov and reject masks" begin
+    df = _load_simdata1()
+    formula = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+    scalar = giv(df, formula, :id, :t, :absS; guess=Dict("Aggregate" => 2.0),
+        quiet=true, algorithm=:scalar_search, complete_coverage=true)
+    debiased = giv(df, formula, :id, :t, :absS; guess=[1.0], quiet=true,
+        algorithm=:debiased_ols, complete_coverage=true, precision_weights=:cue)
+    @test coef(debiased) ≈ coef(scalar) atol=1e-8
+    @test vcov(debiased) ≈ vcov(scalar) rtol=1e-8 atol=1e-12
+    @test endog_coef(scalar)[1] * 2 ≈ 2.5341730 atol=1e-4
+    @test stderror(scalar)[1] * 2 ≈ 0.2407 atol=1e-4
+
+    fixed = giv(df, formula, :id, :t, :absS; guess=[1.0], quiet=true,
+        algorithm=:debiased_ols, complete_coverage=true,
+        precision_weights=:raw_onestep)
+    _, fixed_mats = build_error_function(df, formula, :id, :t, :absS;
+        algorithm=:debiased_ols, complete_coverage=true,
+        precision_weights=:raw_onestep)
+    fixed_u = fixed_mats.uq + fixed_mats.uCp * endog_coef(fixed)
+    _, fixed_ref = solve_specialized_vcov(fixed_u, fixed_mats.S, fixed_mats.C,
+        fixed_mats.uCp, fixed_mats.obs_index; precision=fixed_mats.precision)
+    @test vcov(fixed) == fixed_ref
+    # Frozen regression oracle from pre-change commit 5f94698's fixed-weight
+    # `solve_vcov` route; the copied compatibility helper above independently
+    # reproduces that legacy calculation from the fitted residuals.
+    @test endog_coef(fixed)[1] ≈ 1.0627621672644294 rtol=1e-10
+    @test vcov(fixed)[1, 1] ≈ 0.016200219034447814 rtol=1e-10
+
+    exclusions = Dict(1 => [2])
+    @test_throws ArgumentError giv(df, formula, :id, :t, :absS;
+        guess=[1.0], quiet=true, algorithm=:debiased_ols,
+        complete_coverage=true, precision_weights=:cue, exclude_pairs=exclusions)
+    @test_throws ArgumentError giv(df, formula, :id, :t, :absS;
+        guess=Dict("Aggregate" => 2.0), quiet=true, algorithm=:scalar_search,
+        complete_coverage=true, exclude_pairs=exclusions)
 end
 
 @testset "vcov route matrix and clean CUE pin" begin

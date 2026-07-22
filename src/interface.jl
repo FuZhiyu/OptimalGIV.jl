@@ -98,6 +98,9 @@ function giv(
     if algorithm ∈ [:scalar_search, :debiased_ols] && !complete_coverage
         throw(ArgumentError("`algorithm=$(algorithm)` requires `complete_coverage=true`."))
     end
+    if algorithm ∈ [:scalar_search, :debiased_ols] && any(obs_index.exclpairs)
+        throw(ArgumentError("`exclude_pairs` is supported only for `algorithm=:iv` or `:iv_twopass`; `algorithm=$(algorithm)` does not use pairwise moments."))
+    end
 
     # Resolve omission to the two-step default. Scalar search ignores precision
     # weighting and therefore does not emit or consume the migration warning.
@@ -182,23 +185,26 @@ function giv(
 
     û = uq + uCp * ζ̂
     if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
-        # Vcov routing rule for pairwise IV: all-pair complete-coverage CUE keeps
-        # the maintained optimal-information formula. Incomplete CUE and any CUE
-        # exclusion/pinning use the masked empirical sandwich with the full
-        # candidate-dependent Jacobian. Fixed IV always uses the same frozen
-        # entity/period bundle as its estimating moments.
-        if isnothing(precisionvec)
-            if complete_coverage && isempty(pin_idx) && !any(obs_index.exclpairs)
-                σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+        if algorithm in (:iv, :iv_twopass)
+            # Pairwise IV routing: all-pair complete-coverage CUE keeps optimal
+            # information; every other supported IV case uses the masked sandwich.
+            if isnothing(precisionvec)
+                if complete_coverage && isempty(pin_idx) && !any(obs_index.exclpairs)
+                    σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+                else
+                    σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
+                        ζ=ζ̂_free, complete_coverage=complete_coverage)
+                end
             else
                 σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
-                    ζ=ζ̂_free, complete_coverage=complete_coverage)
+                    precision=precisionvec, Mweights=Mweights)
             end
+        elseif isnothing(precisionvec) && isempty(pin_idx)
+            # Preserve the supported no-exclusion specialized-estimator route.
+            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
         else
-            # Fixed-weight SEs use the same frozen entity and period weights as the
-            # estimating moments. Raw/custom one-step has `Mweights === nothing`;
-            # feasible two-step carries the multipliers computed after step 1.
-            σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index; precision=precisionvec, Mweights=Mweights)
+            σu²vec, Σζ = solve_specialized_vcov(û, S, C_free, uCp_free,
+                obs_index; precision=precisionvec)
         end
         Σζ = isempty(pin_idx) ? Σζ : expand_pinned_vcov(Σζ, keep_idx, Nζ)
         if size(X_feres, 2) > 0
