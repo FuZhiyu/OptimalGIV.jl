@@ -367,6 +367,26 @@ end
     @test vcov(m) == Σ   # byte-identical: no Mweights anywhere in the incomplete path
 end
 
+@testset "two-step frozen weights compose with pin_zero" begin
+    df = _load_simdata1()
+    _, _, names, _, _ = OptimalGIV.get_coefnames(df, _FEQ)
+    pin = names[1]
+    m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+        algorithm=:iv, complete_coverage=true, precision_weights=:twostep,
+        pin_zero=[pin])
+    @test m.converged
+    @test endog_coef(m)[1] == 0.0
+    @test all(iszero, vcov(m)[1, :])
+    @test all(iszero, vcov(m)[:, 1])
+    @test all(isfinite, vcov(m)[2:end, 2:end])
+
+    ef, mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:twostep,
+        pin_zero=[pin])
+    @test size(mats.C, 2) == 4
+    @test length(ef(ones(4))) == 4
+end
+
 # ---------------------------------------------------------------------------
 # Two-step default (precision_weights = :twostep; giv-solver-stability/twostep-default)
 #
