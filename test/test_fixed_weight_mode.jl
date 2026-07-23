@@ -378,52 +378,6 @@ end
     @test vcov(m) == Σ   # byte-identical: no Mweights anywhere in the incomplete path
 end
 
-@testset "two-step frozen weights compose with pin_zero" begin
-    df, fml, ζtrue = _timevarying_complete_fixture()
-    _, _, names, _, _ = OptimalGIV.get_coefnames(df, fml)
-    pin = names[1]
-    m1 = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true,
-        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep,
-        pin_zero=[pin])
-    m = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true,
-        algorithm=:iv, complete_coverage=true, precision_weights=:twostep,
-        pin_zero=[pin])
-    @test m1.converged && m.converged
-    @test endog_coef(m)[1] == 0.0
-    @test all(iszero, vcov(m)[1, :])
-    @test all(iszero, vcov(m)[:, 1])
-    @test all(isfinite, vcov(m)[2:end, 2:end])
-
-    ef, mats = build_error_function(df, fml, :id, :t, :S;
-        algorithm=:iv, complete_coverage=true, precision_weights=:twostep,
-        pin_zero=[pin])
-    @test size(mats.C, 2) == 4
-    @test length(ef(ones(4))) == 4
-
-    ζ1_free = endog_coef(m1)[2:end]
-    ζ2_free = endog_coef(m)[2:end]
-    û1 = mats.uq + mats.uCp * ζ1_free
-    w2 = 1 ./ calculate_entity_variance(û1, mats.obs_index)
-    Mw1 = period_mweights(ζ1_free, mats.C, mats.S, mats.obs_index)
-    @test maximum(Mw1) / minimum(Mw1) > 1.2
-
-    solver = (; ftol=1e-6, show_trace=false, iterations=100)
-    ζ2_direct, converged2 = estimate_giv(mats.uq, mats.uCp, mats.C, mats.S,
-        mats.obs_index, Val(:iv); guess=ζ1_free, quiet=true, complete_coverage=true,
-        solver_options=solver, precision=w2, Mweights=Mw1)
-    @test converged2 && ζ2_free == ζ2_direct
-
-    û2 = mats.uq + mats.uCp * ζ2_free
-    _, Σ_frozen = solve_vcov(û2, mats.S, mats.C, mats.uCp, mats.obs_index;
-        precision=w2, Mweights=Mw1)
-    @test vcov(m)[2:end, 2:end] == Σ_frozen
-
-    Mw2 = period_mweights(ζ2_free, mats.C, mats.S, mats.obs_index)
-    _, Σ_recomputed = solve_vcov(û2, mats.S, mats.C, mats.uCp, mats.obs_index;
-        precision=w2, Mweights=Mw2)
-    @test norm(Σ_frozen - Σ_recomputed) / norm(Σ_frozen) > 1e-4
-end
-
 # ---------------------------------------------------------------------------
 # Two-step default (precision_weights = :twostep; giv-solver-stability/twostep-default)
 #

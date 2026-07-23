@@ -240,7 +240,7 @@ end
         complete_coverage=true, exclude_pairs=exclusions)
 end
 
-@testset "vcov route matrix and clean CUE pin" begin
+@testset "vcov route matrix" begin
     df = _load_simdata1()
     expected_coef = [1.596359996232405, 1.6570008433581191, 1.296430273277033,
         3.3349700649766336, 0.5844260250940619]
@@ -332,36 +332,6 @@ end
     _, fixed_ref = solve_vcov(fixed_u, fixed_mats.S, fixed_mats.C,
         fixed_mats.uCp, fixed_mats.obs_index; precision=fixed_mats.precision)
     @test vcov(fixed) == fixed_ref
-
-    pin_df, pin_formula, ζtrue = _timevarying_complete_fixture()
-    _, _, endog_names, _, _ = OptimalGIV.get_coefnames(pin_df, pin_formula)
-    pinned = giv(pin_df, pin_formula, :id, :t, :S; guess=ζtrue, quiet=true,
-        algorithm=:iv, complete_coverage=true, precision_weights=:cue,
-        pin_zero=[endog_names[1]])
-    @test pinned.converged
-    @test endog_coef(pinned)[1] == 0.0
-    @test all(iszero, vcov(pinned)[1, :]) && all(iszero, vcov(pinned)[:, 1])
-    _, pin_mats = build_error_function(pin_df, pin_formula, :id, :t, :S;
-        algorithm=:iv, complete_coverage=true, precision_weights=:cue,
-        pin_zero=[endog_names[1]])
-    ζpin_free = endog_coef(pinned)[2:end]
-    pin_u = pin_mats.uq + pin_mats.uCp * ζpin_free
-    _, pin_ref = solve_optimal_vcov(ζpin_free, pin_u, pin_mats.S,
-        pin_mats.C, pin_mats.obs_index)
-    @test vcov(pinned)[2:end, 2:end] == pin_ref
-
-    pinned_twostep = giv(pin_df, pin_formula, :id, :t, :S; guess=ζtrue,
-        quiet=true, algorithm=:iv, complete_coverage=true,
-        precision_weights=:twostep, pin_zero=[endog_names[1]])
-    @test pinned_twostep.converged
-    @test endog_coef(pinned_twostep)[1] == 0.0
-    @test all(iszero, vcov(pinned_twostep)[1, :]) &&
-          all(iszero, vcov(pinned_twostep)[:, 1])
-    ζpin_twostep_free = endog_coef(pinned_twostep)[2:end]
-    pin_twostep_u = pin_mats.uq + pin_mats.uCp * ζpin_twostep_free
-    _, pin_twostep_ref = solve_optimal_vcov(ζpin_twostep_free,
-        pin_twostep_u, pin_mats.S, pin_mats.C, pin_mats.obs_index)
-    @test vcov(pinned_twostep)[2:end, 2:end] == pin_twostep_ref
 end
 
 # ---------------------------------------------------------------------------
