@@ -1,8 +1,9 @@
 using Test, OptimalGIV, Random, LinearAlgebra, ForwardDiff, Statistics
 using OptimalGIV: calculate_entity_variance, create_observation_index,
     masked_period_scores, mean_moment_conditions, moment_conditions,
-    period_mweights, solve_optimal_vcov, solve_specialized_vcov, solve_vcov,
-    _central_difference_jacobian, _positive_domain_jacobian
+    period_mweights, solve_optimal_vcov, solve_vcov,
+    _central_difference_jacobian, _positive_domain_jacobian, build_error_function,
+    aggregate_elasticity_in_domain
 using DataFrames, CategoricalArrays
 
 function _vcov_scope_fixture(; excluded=false)
@@ -195,7 +196,7 @@ end
     @test Σ ≈ Σref rtol=2e-5 atol=1e-8
 end
 
-@testset "specialized estimators preserve no-exclusion vcov and reject masks" begin
+@testset "specialized estimators: cue-pinned vcov, mode/mask rejections" begin
     df = _load_simdata1()
     formula = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
     scalar = giv(df, formula, :id, :t, :absS; guess=Dict("Aggregate" => 2.0),
@@ -207,21 +208,28 @@ end
     @test endog_coef(scalar)[1] * 2 ≈ 2.5341730 atol=1e-4
     @test stderror(scalar)[1] * 2 ≈ 0.2407 atol=1e-4
 
-    fixed = giv(df, formula, :id, :t, :absS; guess=[1.0], quiet=true,
-        algorithm=:debiased_ols, complete_coverage=true,
-        precision_weights=:raw_onestep)
-    _, fixed_mats = build_error_function(df, formula, :id, :t, :absS;
-        algorithm=:debiased_ols, complete_coverage=true,
-        precision_weights=:raw_onestep)
-    fixed_u = fixed_mats.uq + fixed_mats.uCp * endog_coef(fixed)
-    _, fixed_ref = solve_specialized_vcov(fixed_u, fixed_mats.S, fixed_mats.C,
-        fixed_mats.uCp, fixed_mats.obs_index; precision=fixed_mats.precision)
-    @test vcov(fixed) == fixed_ref
-    # Frozen regression oracle from pre-change commit 5f94698's fixed-weight
-    # `solve_vcov` route; the copied compatibility helper above independently
-    # reproduces that legacy calculation from the fitted residuals.
-    @test endog_coef(fixed)[1] ≈ 1.0627621672644294 rtol=1e-10
-    @test vcov(fixed)[1, 1] ≈ 0.016200219034447814 rtol=1e-10
+    # Decision 14: both full-market estimators report the information formula.
+    @test scalar.vcov_method == :optimal
+    @test debiased.vcov_method == :optimal
+    _, deb_mats = build_error_function(df, formula, :id, :t, :absS;
+        algorithm=:debiased_ols, complete_coverage=true, precision_weights=:cue)
+    deb_u = deb_mats.uq + deb_mats.uCp * endog_coef(debiased)
+    _, deb_ref = solve_optimal_vcov(endog_coef(debiased), deb_u, deb_mats.S,
+        deb_mats.C, deb_mats.obs_index)
+    @test vcov(debiased) == deb_ref
+
+    # Decision 14: fixed-weight modes are rejected for :debiased_ols (including
+    # the resolved :twostep default), and it has no pairwise sandwich.
+    for pw in (:raw_onestep, :twostep, ones(5))
+        @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
+            quiet=true, algorithm=:debiased_ols, complete_coverage=true,
+            precision_weights=pw)
+    end
+    @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
+        quiet=true, algorithm=:debiased_ols, complete_coverage=true)
+    @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
+        quiet=true, algorithm=:debiased_ols, complete_coverage=true,
+        precision_weights=:cue, vcov=:sandwich)
 
     exclusions = Dict(1 => [2])
     @test_throws ArgumentError giv(df, formula, :id, :t, :absS;
@@ -354,4 +362,178 @@ end
     _, pin_twostep_ref = solve_optimal_vcov(ζpin_twostep_free,
         pin_twostep_u, pin_mats.S, pin_mats.C, pin_mats.obs_index)
     @test vcov(pinned_twostep)[2:end, 2:end] == pin_twostep_ref
+end
+
+# ---------------------------------------------------------------------------
+# `vcov` selector keyword, input validation, NaN-vcov return, recorded fields
+# (giv-solver-stability/vcov-selector-hardening; umbrella decisions 13, 14, 16)
+# ---------------------------------------------------------------------------
+
+@testset "vcov selector: eligibility cells and :sandwich frozen-bundle equality" begin
+    df = _load_simdata1()
+
+    # frozen step-1 bundle used by the complete-coverage :twostep sandwich
+    m1 = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    û₁ = mats.uq + mats.uCp * endog_coef(m1)
+    w2 = 1 ./ calculate_entity_variance(û₁, mats.obs_index)
+    Mw1 = period_mweights(endog_coef(m1), mats.C, mats.S, mats.obs_index)
+
+    # --- complete-coverage :twostep: eligible for the information formula ---
+    tw_auto = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:twostep)
+    tw_opt = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:twostep, vcov=:optimal)
+    tw_sand = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:twostep, vcov=:sandwich)
+    @test tw_auto.vcov_method == :optimal
+    @test tw_opt.vcov_method == :optimal
+    @test vcov(tw_auto) == vcov(tw_opt)          # :auto ≡ :optimal when eligible
+    @test tw_sand.vcov_method == :sandwich
+    @test vcov(tw_auto) != vcov(tw_sand)          # different route ⇒ different SEs
+    # :sandwich equals a hand-built solve_vcov on the frozen step-1 weight bundle
+    û₂ = mats.uq + mats.uCp * endog_coef(tw_sand)
+    _, Σ_frozen = solve_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index;
+        precision=w2, Mweights=Mw1)
+    @test vcov(tw_sand) == Σ_frozen
+
+    # --- complete-coverage :cue: also eligible ---
+    cue_auto = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:cue)
+    cue_sand = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:cue, vcov=:sandwich)
+    @test cue_auto.vcov_method == :optimal
+    @test cue_sand.vcov_method == :sandwich
+    cue_u = mats.uq + mats.uCp * endog_coef(cue_sand)
+    _, Σ_cue_sand = solve_vcov(cue_u, mats.S, mats.C, mats.uCp, mats.obs_index;
+        ζ=endog_coef(cue_sand), complete_coverage=true)
+    @test vcov(cue_sand) == Σ_cue_sand
+
+    # --- complete-coverage :raw_onestep and custom vector: sandwich-only ---
+    for pw in (:raw_onestep, w2)
+        auto = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+            complete_coverage=true, precision_weights=pw)
+        @test auto.vcov_method == :sandwich
+        @test_throws ArgumentError giv(df, _FEQ, :id, :t, :absS; guess=ones(5),
+            quiet=true, algorithm=:iv, complete_coverage=true,
+            precision_weights=pw, vcov=:optimal)
+    end
+
+    # --- incomplete coverage: never information-formula eligible ---
+    for pw in (:twostep, :cue)
+        inc = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+            complete_coverage=false, precision_weights=pw)
+        @test inc.vcov_method == :sandwich
+        @test_throws ArgumentError giv(df, _FEQ, :id, :t, :absS; guess=ones(5),
+            quiet=true, algorithm=:iv, complete_coverage=false,
+            precision_weights=pw, vcov=:optimal)
+    end
+end
+
+@testset "vcov selector: recorded reproducibility fields" begin
+    df = _load_simdata1()
+    m1 = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    û₁ = mats.uq + mats.uCp * endog_coef(m1)
+    w2 = 1 ./ calculate_entity_variance(û₁, mats.obs_index)
+    Mw1 = period_mweights(endog_coef(m1), mats.C, mats.S, mats.obs_index)
+
+    tw = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:twostep)
+    @test tw.precision_weights === :twostep
+    @test tw.entity_precision == w2              # frozen step-2 precisions
+    @test tw.period_weights == Mw1               # frozen complete-coverage multipliers
+    @test tw.vcov_method == :optimal
+
+    raw = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    @test raw.precision_weights === :raw_onestep
+    @test raw.entity_precision == mats.precision
+    @test isnothing(raw.period_weights)          # equal period weights
+    @test raw.vcov_method == :sandwich
+
+    cue = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:cue)
+    @test cue.precision_weights === :cue
+    @test isnothing(cue.entity_precision)        # not frozen
+    @test isnothing(cue.period_weights)
+    @test cue.vcov_method == :optimal
+
+    custom = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=w2)
+    @test custom.precision_weights == w2
+    @test custom.entity_precision == w2
+    @test custom.vcov_method == :sandwich
+end
+
+@testset "vcov selector: input validation" begin
+    df = _load_simdata1()
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv,
+        complete_coverage=true, precision_weights=:raw_onestep)
+    N = length(mats.precision)
+    good = fill(2.0, N)
+
+    bad_inf = copy(good); bad_inf[1] = Inf
+    bad_nan = copy(good); bad_nan[2] = NaN
+    bad_neg = copy(good); bad_neg[1] = -1.0
+    bad_zero = copy(good); bad_zero[1] = 0.0
+    for badvec in (bad_inf, bad_nan, bad_neg, bad_zero)
+        @test_throws ArgumentError giv(df, _FEQ, :id, :t, :absS; guess=ones(5),
+            quiet=true, algorithm=:iv, complete_coverage=true, precision_weights=badvec)
+    end
+
+    # unknown vcov selector
+    @test_throws ArgumentError giv(df, _FEQ, :id, :t, :absS; guess=ones(5),
+        quiet=true, algorithm=:iv, complete_coverage=true, vcov=:robust)
+
+    # scalar_search rejects an explicit precision_weights; omission is fine
+    sform = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+    @test_throws ArgumentError giv(df, sform, :id, :t, :absS;
+        guess=Dict("Aggregate" => 2.0), quiet=true, algorithm=:scalar_search,
+        complete_coverage=true, precision_weights=:cue)
+    s = giv(df, sform, :id, :t, :absS; guess=Dict("Aggregate" => 2.0), quiet=true,
+        algorithm=:scalar_search, complete_coverage=true)
+    @test isnothing(s.precision_weights) && isnothing(s.entity_precision)
+end
+
+# Complete-coverage CUE landing at a nonpositive/near-zero aggregate elasticity:
+# both the sandwich derivative and the information formula require the positive
+# domain. Random symmetric flows with a negative starting guess drive the CUE
+# root off-domain (seed pinned, as elsewhere in this suite).
+function _offdomain_cue_fixture()
+    Random.seed!(5)
+    N, T = 3, 25
+    ids = repeat(1:N, T)
+    ts = repeat(1:T; inner=N)
+    S = fill(1.0 / N, N * T)
+    p = repeat(randn(T); inner=N)
+    q = randn(N * T)
+    for t in 1:T
+        r = (t - 1) * N + 1:t * N
+        q[r] .-= sum(S[r] .* q[r]) / sum(S[r])   # enforce exact market clearing
+    end
+    df = DataFrame(id=CategoricalArray(ids), t=ts, q=q, p=p, S=S, η=randn(N * T))
+    return df, @formula(q + endog(p) ~ 0 + η)
+end
+
+@testset "vcov selector: off-domain CUE returns NaN vcov without crashing" begin
+    df, f = _offdomain_cue_fixture()
+    # giv must NOT let the DomainError from the CUE sandwich derivative escape.
+    m = giv(df, f, :id, :t, :S; guess=[-3.0], quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:cue, iterations=200)
+    _, mats = build_error_function(df, f, :id, :t, :S; algorithm=:iv,
+        complete_coverage=true, precision_weights=:cue)
+    @test !aggregate_elasticity_in_domain(endog_coef(m), mats.C, mats.S, mats.obs_index)
+    @test !m.converged
+    @test all(isnan, vcov(m))
+    @test m.vcov_method == :none
+
+    # Direct solve_vcov at the same off-domain root keeps its throwing behavior.
+    û = mats.uq + mats.uCp * endog_coef(m)
+    @test_throws DomainError solve_vcov(û, mats.S, mats.C, mats.uCp, mats.obs_index;
+        ζ=endog_coef(m), complete_coverage=true)
 end

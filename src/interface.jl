@@ -23,26 +23,15 @@ function resolve_precision(precision_weights, uq, obs_index)
     elseif precision_weights isa AbstractVector
         length(precision_weights) == obs_index.N ||
             throw(ArgumentError("`precision_weights` must have length N = $(obs_index.N) (got $(length(precision_weights)))."))
-        return collect(float.(precision_weights))
+        vec = collect(float.(precision_weights))
+        all(isfinite, vec) ||
+            throw(ArgumentError("custom `precision_weights` must be finite; got a non-finite entry."))
+        all(>(zero(eltype(vec))), vec) ||
+            throw(ArgumentError("custom `precision_weights` must be strictly positive; got a non-positive entry."))
+        return vec
     else
         throw(ArgumentError("Unknown precision_weights = $(precision_weights); use :twostep, :raw_onestep, :cue, or an entity-length vector."))
     end
-end
-
-# One-time migration warning for calls that omit `precision_weights`. The flag
-# flips only when the warning is emitted, so quiet calls do not consume it.
-const _TWOSTEP_DEFAULT_WARNED = Ref(false)
-
-function default_precision_weights(quiet::Bool)
-    if !quiet && !_TWOSTEP_DEFAULT_WARNED[]
-        _TWOSTEP_DEFAULT_WARNED[] = true
-        @warn "The default GIV estimator changed from :cue to :twostep. The two-step " *
-              "estimator is more stable while retaining CUE-like efficiency, but estimates " *
-              "and standard errors may differ slightly. " *
-              "Pass `precision_weights = :twostep` explicitly (or set `quiet = true`) " *
-              "to silence this one-time warning."
-    end
-    return :twostep
 end
 
 function giv(
@@ -59,6 +48,7 @@ function giv(
     save_df=false,
     complete_coverage::Bool,
     return_vcov=true,
+    vcov::Symbol=:auto,
     contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     iterations=100,
@@ -102,13 +92,24 @@ function giv(
         throw(ArgumentError("`exclude_pairs` is supported only for `algorithm=:iv` or `:iv_twopass`; `algorithm=$(algorithm)` does not use pairwise moments."))
     end
 
-    # Resolve omission to the two-step default. Scalar search ignores precision
-    # weighting and therefore does not emit or consume the migration warning.
-    if algorithm != :scalar_search && isnothing(precision_weights)
-        precision_weights = default_precision_weights(quiet)
+    vcov ∈ (:auto, :sandwich, :optimal) ||
+        throw(ArgumentError("`vcov` must be :auto, :sandwich, or :optimal; got $(repr(vcov))."))
+
+    # Resolve the omitted keyword to the two-step default plainly. Scalar search
+    # takes no entity precision weighting, so an explicit request would be
+    # silently discarded — reject it instead. `:debiased_ols` is pinned to :cue
+    # until a fixed-weight covariance is derived for it.
+    if algorithm == :scalar_search
+        isnothing(precision_weights) || throw(ArgumentError(
+            "`precision_weights` is not used by `algorithm = :scalar_search`; remove it."))
+        precisionvec = nothing
+    else
+        isnothing(precision_weights) && (precision_weights = :twostep)
+        algorithm == :debiased_ols && precision_weights !== :cue && throw(ArgumentError(
+            "`algorithm = :debiased_ols` supports only `precision_weights = :cue`; " *
+            "fixed-weight covariance is not yet derived for it."))
+        precisionvec = resolve_precision(precision_weights, uq, obs_index)
     end
-    precisionvec = algorithm == :scalar_search ? nothing :
-                   resolve_precision(precision_weights, uq, obs_index)
 
     # Pin selected endogenous coefficients at exactly zero and drop their moment
     # conditions. The reduced system is solved and expanded back to the full
@@ -184,30 +185,68 @@ function giv(
     β = β_q + β_Cp * ζ̂
 
     û = uq + uCp * ζ̂
+    vcov_method = :none
     if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
+        # Information-formula eligibility for the IV routes. The domain term is
+        # already folded into `converged` by `estimate_giv` for complete coverage;
+        # it is recomputed here so `:optimal` never relies on that coupling
+        # silently (planner guidance).
+        optimal_eligible = algorithm in (:iv, :iv_twopass) && complete_coverage &&
+            converged && aggregate_elasticity_in_domain(ζ̂_free, C_free, S, obs_index) &&
+            (precision_weights === :twostep || isnothing(precisionvec))
+
         if algorithm in (:iv, :iv_twopass)
-            # The information formula applies to complete-coverage CUE and to
-            # a successfully completed frozen two-step solve. Pinned
-            # coefficients remain exactly zero by evaluating the formula on the
-            # reduced free-column system.
-            use_optimal_vcov = complete_coverage && converged &&
-                aggregate_elasticity_in_domain(ζ̂_free, C_free, S, obs_index) &&
-                (isnothing(precisionvec) || precision_weights === :twostep)
-            if use_optimal_vcov
-                σu²vec, Σζ = solve_optimal_vcov(ζ̂_free, û, S, C_free, obs_index)
-            elseif isnothing(precisionvec)
-                σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
-                    ζ=ζ̂_free, complete_coverage=complete_coverage)
-            else
-                σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
-                    precision=precisionvec, Mweights=Mweights)
+            if vcov === :optimal && !optimal_eligible
+                reasons = String[]
+                complete_coverage || push!(reasons, "incomplete coverage")
+                (precision_weights === :twostep || isnothing(precisionvec)) ||
+                    push!(reasons, "fixed one-step or custom precision weights (only :twostep or :cue are eligible)")
+                (complete_coverage && !converged) &&
+                    push!(reasons, "non-converged or off-domain root")
+                throw(ArgumentError(
+                    "`vcov = :optimal` requires the information formula's maintained restrictions, " *
+                    "which fail here ($(join(reasons, "; "))). Use `vcov = :auto` for the sandwich fallback."))
             end
-        elseif isnothing(precisionvec) && isempty(pin_idx)
-            # Preserve the supported no-exclusion specialized-estimator route.
-            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+            use_optimal = vcov === :optimal || (vcov === :auto && optimal_eligible)
+            # Pinned coefficients stay exactly zero by evaluating the covariance on
+            # the reduced free-column system, then re-expanding.
+            try
+                if use_optimal
+                    σu²vec, Σζ = solve_optimal_vcov(ζ̂_free, û, S, C_free, obs_index)
+                    vcov_method = :optimal
+                elseif isnothing(precisionvec)
+                    # CUE sandwich: the bread differentiates the full candidate map.
+                    σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
+                        ζ=ζ̂_free, complete_coverage=complete_coverage)
+                    vcov_method = :sandwich
+                else
+                    # Fixed-weight sandwich with the exact frozen estimating weights.
+                    σu²vec, Σζ = solve_vcov(û, S, C_free, uCp_free, obs_index;
+                        precision=precisionvec, Mweights=Mweights)
+                    vcov_method = :sandwich
+                end
+            catch err
+                # A domain requirement failed at the reported root (e.g. complete-
+                # coverage CUE sandwich derivative off the positive branch). Return a
+                # non-converged fit with NaN covariance instead of letting the
+                # DomainError escape. Direct `solve_vcov` calls still throw.
+                err isa DomainError || rethrow()
+                !quiet && @warn "The requested covariance route could not be evaluated at the " *
+                    "reported root; returning NaN covariance and marking the fit non-converged." exception = err
+                σu²vec = NaN * zeros(N)
+                Σζ = NaN * zeros(length(ζ̂_free), length(ζ̂_free))
+                converged = false
+                vcov_method = :none
+            end
         else
-            σu²vec, Σζ = solve_specialized_vcov(û, S, C_free, uCp_free,
-                obs_index; precision=precisionvec)
+            # Full-market estimators (`:debiased_ols` pinned to :cue, `:scalar_search`)
+            # report the information formula; they have no pairwise sandwich, so
+            # `:sandwich` is rejected.
+            vcov === :sandwich && throw(ArgumentError(
+                "`vcov = :sandwich` is not available for `algorithm = $(algorithm)`; " *
+                "its covariance uses the information formula. Use `vcov = :auto` or `:optimal`."))
+            σu²vec, Σζ = solve_optimal_vcov(ζ̂_free, û, S, C_free, obs_index)
+            vcov_method = :optimal
         end
         Σζ = isempty(pin_idx) ? Σζ : expand_pinned_vcov(Σζ, keep_idx, Nζ)
         if size(X_feres, 2) > 0
@@ -346,6 +385,14 @@ function giv(
         nrow(df),
         dof,
         dof_residual,
+
+        # Reproducibility: the resolved weighting mode, the frozen entity/period
+        # weight bundle actually used in the estimating moments, and the
+        # covariance route that produced `endog_vcov`.
+        precision_weights,
+        precisionvec,
+        Mweights,
+        vcov_method,
     )
 end
 
@@ -383,11 +430,24 @@ complete coverage, market clearing.
     period weights.
   - `:cue` updates residual-based precisions and complete-coverage period
     multipliers at every candidate; this was the previous default.
-  - An entity-length vector supplies custom fixed precisions in sorted entity
-    order and uses equal period weights.
-  Omitting this keyword selects `:twostep` and emits a one-time notice unless
-  `quiet = true`. The quadratic and period-weight statements above apply to the
-  IV algorithms; the specialized algorithms retain their own moment definitions.
+  - An entity-length vector supplies custom fixed precisions (which must be
+    finite and strictly positive) in sorted entity order and uses equal period
+    weights.
+  Omitting this keyword selects `:twostep`. The quadratic and period-weight
+  statements above apply to the IV algorithms; the specialized algorithms retain
+  their own moment definitions. `:debiased_ols` supports only `:cue` (fixed-weight
+  covariance is not yet derived for it); `:scalar_search` takes no precision
+  weighting and rejects an explicit `precision_weights`.
+- `vcov = :auto`: Covariance route. `:auto` reports the model-implied information
+  formula where it is eligible — a converged, in-domain, complete-coverage
+  `:twostep` or `:cue` IV fit — and the masked empirical sandwich otherwise.
+  `:sandwich` forces the sandwich with exactly the frozen estimating weights on
+  any supported IV route. `:optimal` requires the information formula and errors
+  where its maintained restrictions fail (incomplete coverage, fixed
+  one-step/custom weights, or a non-converged/off-domain root). The information
+  formula is efficient under the maintained second-moment model but inconsistent
+  under time-varying or cross-entity-dependent volatility, where the sandwich
+  stays consistent.
 - `guess = nothing`: Starting value for the endogenous coefficients. Accepts a
   number, a coefficient vector, or a dictionary keyed by coefficient name. OLS
   starting values are used when omitted.
@@ -400,8 +460,8 @@ complete coverage, market clearing.
 - `pin_zero = String[]`: Exact endogenous coefficient names to fix at zero,
   dropping their moment rows so the reduced system remains exactly identified.
   Pinned entities remain in the panel and their covariance rows and columns are
-  reported as zero. Scalar search does not support pinning; complete-coverage CUE
-  with pins uses the general sandwich on the reduced system.
+  reported as zero. Scalar search does not support pinning; the covariance route
+  is selected on the reduced free-coefficient system exactly as without pins.
 - `complete_coverage`: Required Boolean declaring whether the data design covers
   the full market. A `true` declaration is validated against market clearing,
   but adding-up alone is not used to infer coverage.
@@ -416,10 +476,12 @@ complete coverage, market clearing.
 - `solver_options`: Additional options passed to NLsolve as a named tuple.
 - `pca_option`: Options passed to HeteroPCA for specifications with `pc(k)`.
 
-For fixed-weight IV, each solve is an exact quadratic system. Raw one-step,
-custom weights, and feasible two-step use the standard sandwich covariance with
-the weights held fixed in their estimating moments. The optimal covariance
-formula is used only for CUE under complete coverage.
+For fixed-weight IV, each solve is an exact quadratic system. Under `vcov = :auto`,
+a converged, in-domain, complete-coverage `:twostep` or `:cue` fit reports the
+model-implied information (optimal) covariance on the retained pair set; raw
+one-step, custom-weight, incomplete-coverage, and non-converged fits report the
+masked empirical sandwich with the weights held fixed in their estimating
+moments. `vcov = :sandwich` forces the sandwich on any of these routes.
 
 Under complete coverage, the economic period multiplier is
 `M_t = 1 / ζS_t` on the maintained positive aggregate-elasticity domain. The

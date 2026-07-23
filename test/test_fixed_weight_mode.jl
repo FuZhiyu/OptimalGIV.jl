@@ -447,22 +447,18 @@ end
     @test maximum(abs, endog_coef(m_cue) - endog_coef(m_twostep)) < 1e-3  # near-efficient
 end
 
-@testset "twostep default: one-time migration warning" begin
+@testset "twostep default: silent :twostep resolution (shim removed)" begin
     df = _load_simdata1()
     gcall(; kw...) = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), algorithm=:iv,
         complete_coverage=true, solver_options=(; ftol=1e-6, show_trace=false, iterations=100), kw...)
 
-    OptimalGIV._TWOSTEP_DEFAULT_WARNED[] = false
-    for weights in (:twostep, :raw_onestep, :cue, ones(5))
-        @test_logs min_level=Logging.Warn gcall(precision_weights=weights)
-    end
-    @test !OptimalGIV._TWOSTEP_DEFAULT_WARNED[]
-    @test_logs min_level=Logging.Warn gcall(quiet=true)
-    @test !OptimalGIV._TWOSTEP_DEFAULT_WARNED[]
-    @test_logs (:warn, r"default GIV estimator changed from :cue to :twostep.*more stable while retaining CUE-like efficiency.*estimates and standard errors may differ slightly") match_mode=:any gcall()
-    @test OptimalGIV._TWOSTEP_DEFAULT_WARNED[]
+    # Omitting `precision_weights` resolves to :twostep with no migration warning
+    # and records the resolved mode on the model.
     @test_logs min_level=Logging.Warn gcall()
-    OptimalGIV._TWOSTEP_DEFAULT_WARNED[] = false
+    @test_logs min_level=Logging.Warn gcall(precision_weights=:twostep)
+    m_default = gcall()
+    @test m_default.precision_weights === :twostep
+    @test endog_coef(m_default) == endog_coef(gcall(precision_weights=:twostep))
 end
 
 @testset "twostep: step 2 ≡ custom step-1-residual precisions" begin

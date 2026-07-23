@@ -669,53 +669,6 @@ function solve_optimal_vcov(ζ, u, S, C, obs_index)
 end
 
 """
-    solve_specialized_vcov(u, S, C, Cp, obs_index; precision=nothing)
-
-Compatibility covariance retained for the no-exclusion `:debiased_ols` route
-until that estimator receives its own covariance derivation. This is the
-pre-existing model-diagonal formula and must not be used for pairwise IV, whose
-masked empirical sandwich is `solve_vcov`.
-"""
-function solve_specialized_vcov(u, S, C, Cp, obs_index; precision=nothing)
-    any(obs_index.exclpairs) && throw(ArgumentError(
-        "`exclude_pairs` is unsupported for specialized estimators whose moment maps do not consume the pair mask."))
-    Nmom, T = size(C, 2), obs_index.T
-    σu²vec = calculate_entity_variance(u, obs_index)
-    pair_i, pair_j = admissible_pair_indices(obs_index)
-    n_pairs = length(pair_i)
-    Vdiag = [σu²vec[pair_i[idx]] * σu²vec[pair_j[idx]] for idx in 1:n_pairs]
-    W = zeros(eltype(u), n_pairs, Nmom, T)
-    D = zeros(eltype(u), n_pairs, Nmom, T)
-    prec = isnothing(precision) ? 1 ./ σu²vec : precision
-
-    for t in 1:T, idx in 1:n_pairs
-        i, j = pair_i[idx], pair_j[idx]
-        i_pos = obs_index.entity_obs_indices[i, t]
-        j_pos = obs_index.entity_obs_indices[j, t]
-        (i_pos == 0 || j_pos == 0) && continue
-        for k in 1:Nmom
-            W[idx, k, t] = prec[i] * S[j_pos] * C[i_pos, k] +
-                           prec[j] * S[i_pos] * C[j_pos, k]
-            D[idx, k, t] = u[j_pos] * Cp[i_pos, k] + u[i_pos] * Cp[j_pos, k]
-        end
-    end
-
-    A = zeros(eltype(u), Nmom, Nmom)
-    B = zeros(eltype(u), Nmom, Nmom)
-    @views for t in 1:T
-        Wt, Dt = W[:, :, t], D[:, :, t]
-        A .+= Dt' * Wt
-        B .+= Wt' * (Wt .* Vdiag)
-    end
-    A ./= T - 1
-    B ./= T
-    B = Symmetric(B + B') / 2
-    invA = inv(A)
-    Σζ = invA * B * invA' / T
-    return σu²vec, Symmetric(Σζ + Σζ') / 2
-end
-
-"""
     masked_period_scores(u, S, C, Cp, obs_index, precision, Mweights; bread=false)
 
 Construct the actual period scores from the estimator's admissible pairs and

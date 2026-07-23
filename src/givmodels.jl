@@ -38,6 +38,15 @@ struct GIVModel <: StatisticalModel
     nobs::Int64
     dof::Int64
     dof_residual::Int64
+
+    # Reproducibility of the weighting/covariance route (giv-solver-stability):
+    # the resolved precision-weight mode, the frozen entity precisions and period
+    # multipliers held fixed in the estimating moments, and the covariance route
+    # (`:optimal`, `:sandwich`, or `:none`) that produced `endog_vcov`.
+    precision_weights::Union{Symbol,Vector{Float64},Nothing}
+    entity_precision::Union{Vector{Float64},Nothing}
+    period_weights::Union{Vector{Float64},Nothing}
+    vcov_method::Symbol
 end
 
 StatsAPI.coef(m::GIVModel) = vcat(endog_coef(m), exog_coef(m))

@@ -88,25 +88,17 @@ end
         algorithm=:iv_twopass, guess=ζ, quiet=true, complete_coverage=true)
 end
 
-@testset "guard: degenerate (Inf) precision poisons the shared normalization" begin
-    # A single Inf entity precision (near-zero residual variance ⇒ 1/σ² = Inf) makes
-    # that entity's moment weightsum Inf, so the shared normalization
-    # momweight ./= sum(momweight) sends every moment row nonfinite at the initial
-    # guess. Feed the Inf via the fixed precision-weight mode so it is deterministic.
+@testset "guard: degenerate custom precision rejected at input validation" begin
+    # A non-finite entity precision (e.g. near-zero residual variance ⇒ 1/σ² = Inf)
+    # would poison the shared moment normalization. Since decision 16, a custom
+    # `precision_weights` vector is validated up front: any non-finite or
+    # non-positive entry is rejected with an `ArgumentError` before the solve,
+    # rather than surfacing later as a NonfiniteMomentError.
     df = _nf_load()
     _, mats = build_error_function(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv, complete_coverage=true)
     N = mats.obs_index.N
-    w = ones(N)
-    w[3] = Inf
     ζ = zeros(size(mats.C, 2))
-    err = try
-        giv(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv, guess=ζ, quiet=true, complete_coverage=true,
-            precision_weights=w)
-        nothing
-    catch e
-        e
-    end
-    @test err isa NonfiniteMomentError
-    @test occursin("precision", err.msg)
-    @test occursin("per-moment total weight", err.msg)
+    w = ones(N); w[3] = Inf
+    @test_throws ArgumentError giv(df, _NF_FEQ, :id, :t, :absS; algorithm=:iv,
+        guess=ζ, quiet=true, complete_coverage=true, precision_weights=w)
 end
