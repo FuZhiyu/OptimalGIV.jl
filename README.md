@@ -32,11 +32,10 @@ The model is estimated with the moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$
 
 Unbalanced panels are allowed. The caller must declare whether the sampled entities cover the full market with `complete_coverage=true` or `false`. In-sample adding-up, $\sum_i S_{i,t}q_{i,t}=0$, is required when complete coverage is declared, but it cannot establish that omitted entities do not exist. The package therefore validates `true` rather than inferring coverage from adding-up.
 
-> [!IMPORTANT]
-> The default `precision_weights` mode changed from continuously updated GMM
-> (`:cue`) to feasible two-step GMM (`:twostep`). Omitting
-> `precision_weights` selects `:twostep` and emits a one-time notice unless
-> `quiet=true`. Pass the mode explicitly for reproducible estimator selection.
+> [!NOTE]
+> `precision_weights` defaults to `:twostep` (feasible two-step GMM); the
+> earlier default was continuously updated GMM (`:cue`). Pass
+> `precision_weights = :cue` explicitly to reproduce that estimator.
 
 
 ## Installation
@@ -142,6 +141,7 @@ giv(df, formula, id, t, weight; kwargs...)
 - `save_df`: If true, the full estimation DataFrame (including residuals, coefficients, and fixed-effects columns when requested) is stored in the returned model. When PC extraction is used, PC factors and loadings are also included.
 - `complete_coverage`: Required Boolean declaring whether the sampled entities cover the full market. A `true` declaration is validated by the in-sample adding-up condition. Adding-up does not select the coverage regime.
 - `precision_weights`: IV weighting mode: `:twostep` (default), `:raw_onestep`, `:cue`, or a custom entity-length vector. See [Estimator Weighting](#estimator-weighting).
+- `vcov`: Covariance route: `:auto` (default), `:sandwich`, or `:optimal`. See [Covariance Routing](#covariance-routing).
 - `return_vcov`: Calculate variance-covariance matrix (default: true, automatically disabled when PC extraction is used)
 - `contrasts`: Contrasts specification for categorical variables (following StatsModels.jl). Untested. Use with cautions.
 - `tol`: Convergence tolerance (default: 1e-6)
@@ -232,12 +232,12 @@ The `precision_weights` modes below apply to `algorithm=:iv` and its reference
 implementation, `:iv_twopass`. Here $\widetilde{\zeta}$ denotes the first-step
 estimate and $M_t$ is the complete-coverage period multiplier.
 
-| Mode | Entity weights | Period weights | IV moment system | Covariance |
+| Mode | Entity weights | Period weights | IV moment system | Covariance (`vcov=:auto`) |
 |---|---|---|---|---|
-| `:raw_onestep` | Fix $1/\operatorname{var}(uq_i)$ before solving | Equal | Exact quadratic | Standard sandwich with the same fixed weights |
-| Custom vector | Fix the supplied entity weights before solving | Equal | Exact quadratic | Standard sandwich with the same fixed weights |
-| `:twostep` (default) | Step 1 uses raw weights; step 2 fixes $1/\operatorname{var}(\widehat u_i(\widetilde{\zeta}))$ | Step 1 is equal; complete-coverage step 2 fixes $M_t(\widetilde{\zeta})$ | Two exact-quadratic solves | Standard sandwich with the frozen step-2 weights |
-| `:cue` | Recompute residual-based weights at every candidate | Recompute $M_t$ at every candidate under complete coverage; none otherwise | Nonlinear | Optimal covariance only under complete coverage; standard sandwich otherwise |
+| `:raw_onestep` | Fix $1/\operatorname{var}(uq_i)$ before solving | Equal | Exact quadratic | Sandwich with the same fixed weights (not eligible for the information formula) |
+| Custom vector | Fix the supplied entity weights before solving | Equal | Exact quadratic | Sandwich with the same fixed weights (not eligible for the information formula) |
+| `:twostep` (default) | Step 1 uses raw weights; step 2 fixes $1/\operatorname{var}(\widehat u_i(\widetilde{\zeta}))$ | Step 1 is equal; complete-coverage step 2 fixes $M_t(\widetilde{\zeta})$ | Two exact-quadratic solves | Information formula when eligible (converged, complete coverage, in-domain); sandwich with the frozen step-2 weights otherwise |
+| `:cue` | Recompute residual-based weights at every candidate | Recompute $M_t$ at every candidate under complete coverage; none otherwise | Nonlinear | Information formula when eligible (converged, complete coverage, in-domain); sandwich otherwise (including incomplete coverage) |
 
 Feasible two-step GMM therefore has exactly two solves. Step 1 uses raw entity
 weights and equal period weights to obtain $\widetilde{\zeta}$. The estimator
@@ -251,6 +251,24 @@ the package evaluates a normalized version of
 `1 / clamp(abs(ζS_t), sqrt(eps), Inf)` off that domain. This numerical extension
 does not change the estimand: a reported complete-coverage root with
 nonpositive or near-zero aggregate elasticity is marked non-converged.
+
+## Covariance Routing
+
+The `vcov` keyword selects the covariance route. `:auto` (default) reports the
+model-implied information-formula covariance for an eligible fit — converged,
+complete-coverage, in-domain `:twostep` or `:cue` — and the masked empirical
+sandwich otherwise (see the table above). `:sandwich` forces the sandwich,
+built from exactly the entity and period weights frozen in the estimating
+moments and the same non-excluded entity pairs used by those moments, on any
+supported route. `:optimal` requires the information formula and errors when
+its restrictions fail. The information formula is efficient under a
+maintained second-moment model (time-constant entity variances,
+cross-entity-independent second moments); the sandwich stays consistent when
+that model fails, so the robust alternative is one keyword away.
+
+The sandwich's Jacobian follows the orientation of the pairwise IV estimating
+equations themselves — it is the empirical bread/meat estimator, distinct
+from the model-implied information matrix `:optimal` reports.
 
 ## Algorithms
 

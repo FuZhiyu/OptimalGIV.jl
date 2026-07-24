@@ -139,7 +139,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 - `:twostep` first uses raw entity weights and equal period weights; it computes entity precisions and complete-coverage period weights at the first-step estimate, then freezes both for one second solve
 - `:cue` recomputes every applicable weight at each candidate estimate
 - Fixed-weight IV solves are exact quadratic systems under both coverage regimes
-- Two-step uses the standard sandwich with the same frozen weights as its moments; the optimal covariance formula is reserved for complete-coverage CUE
+- `vcov` selects the covariance route: `:auto` (default) reports the information-formula covariance for an eligible fit — converged, complete-coverage, in-domain `:twostep` or `:cue` — and the masked sandwich (exact frozen estimating weights, same non-excluded pairs) otherwise; `:sandwich` forces the sandwich on any supported route; `:optimal` requires the information formula and errors where its restrictions fail. `:raw_onestep` and custom-weight fits are never eligible for the information formula
 - The economic multiplier is `M_t = 1 / ζS_t` for positive aggregate elasticity. The absolute-value clamp is only a finite off-domain iteration rule; final complete-coverage roots must satisfy the positive-domain check
 
 #### Panel Data Handling
@@ -169,3 +169,9 @@ Tests are organized by functionality:
 2. **Coverage Assumptions**: Set `complete_coverage` from the data design; do not infer it from sample adding-up
 3. **Missing Data**: Package doesn't handle missing values - clean data first
 4. **Memory Usage**: Large panels with entity interactions can be memory-intensive
+5. **Exact-zero pinning**: The package has no `pin_zero` keyword — pinning a
+   coefficient at zero is exactly column subsetting of the loading matrix, and
+   is implemented outside the package. Treasury callers use the `giv_pinned`
+   wrapper in `Code/EstimateTreasuryDemandwithGIV/estimates_io_helpers.jl`,
+   which builds the reduced loading columns and re-expands the fit to the full
+   coefficient shape
