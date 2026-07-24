@@ -4,6 +4,8 @@ using OptimalGIV.NLsolve: nlsolve, converged
 using ForwardDiff
 using DataFrames, CSV, CategoricalArrays
 
+include("vcov_test_helpers.jl")   # _load_simdata1, _FEQ, _timevarying_complete_fixture
+
 # ---------------------------------------------------------------------------
 # Analytic Jacobian of the fixed-precision moment kernel
 # (giv-solver-stability/analytic-jacobian)
@@ -16,36 +18,10 @@ using DataFrames, CSV, CategoricalArrays
 # and check the solver root is unchanged relative to the FD/autodiff path.
 # ---------------------------------------------------------------------------
 
-const _SIMDATA1_AJ = joinpath(@__DIR__, "..", "examples", "simdata1.csv")
-
-function _load_simdata1_aj()
-    df = CSV.read(_SIMDATA1_AJ, DataFrame)
-    df.id = CategoricalArray(df.id)
-    return df
-end
-
-const _FEQ_AJ = @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0)
-
-# DGP with genuinely time-varying aggregate elasticity ζS_t (sizes move over t,
-# p_t clears the market exactly); reused from
-# the complete-coverage-vcov tests in test_fixed_weight_mode.jl.
-function _tv_zetaS_df(; N=5, T=80, seed=20260720)
-    Random.seed!(seed)
-    ζtrue = [0.5, 1.0, 1.5, 2.0, 3.0]
-    Smat = rand(N, T) .^ 3 .+ 0.05
-    Smat ./= sum(Smat; dims=1)
-    umat = randn(N, T) .* (0.5 .+ rand(N))
-    p = [dot(Smat[:, t], umat[:, t]) / dot(Smat[:, t], ζtrue) for t in 1:T]
-    qmat = umat .- ζtrue * p'
-    df = DataFrame(
-        id=CategoricalArray(repeat(1:N, T)),
-        t=repeat(1:T; inner=N),
-        q=vec(qmat),
-        p=repeat(p; inner=N),
-        S=vec(Smat),
-    )
-    return df, ζtrue
-end
+# The simdata1 loader (`_load_simdata1`), its formula (`_FEQ`), and the
+# time-varying-ζS complete-coverage fixture (`_timevarying_complete_fixture`,
+# genuinely time-varying aggregate elasticity ζS_t with exact market clearing)
+# are shared with test_fixed_weight_mode.jl / test_vcov_scope.jl via the helper.
 
 # analytic vs ForwardDiff at a set of ζ points (both exact ⇒ machine-precision agreement)
 function _test_jac_vs_forwarddiff(err_func, jac_func, ζpoints)
@@ -57,8 +33,8 @@ function _test_jac_vs_forwarddiff(err_func, jac_func, ζpoints)
 end
 
 @testset "analytic Jacobian: incomplete coverage (fixed quadratic map)" begin
-    df = _load_simdata1_aj()
-    ef, mats = build_error_function(df, _FEQ_AJ, :id, :t, :absS;
+    df = _load_simdata1()
+    ef, mats = build_error_function(df, _FEQ, :id, :t, :absS;
         algorithm=:iv, complete_coverage=false, precision_weights=:raw_onestep)
     @test mats.jac_func !== nothing
     Random.seed!(1)
@@ -72,8 +48,8 @@ end
 end
 
 @testset "analytic Jacobian: frozen complete-coverage period scaling" begin
-    df, ζtrue = _tv_zetaS_df()
-    fml = @formula(q + id & endog(p) ~ 0)
+    fx = _timevarying_complete_fixture()
+    df, fml, ζtrue = fx.df, fx.fml, fx.ζtrue
     ef_equal, mats = build_error_function(df, fml, :id, :t, :S;
         algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     @test mats.jac_func !== nothing
@@ -108,19 +84,19 @@ end
     excl = Dict(1 => [2, 3], 4 => [5])
     Random.seed!(3)
     # incomplete coverage
-    df1 = _load_simdata1_aj()
-    ef1, mats1 = build_error_function(df1, _FEQ_AJ, :id, :t, :absS;
+    df1 = _load_simdata1()
+    ef1, mats1 = build_error_function(df1, _FEQ, :id, :t, :absS;
         algorithm=:iv, complete_coverage=false, precision_weights=:raw_onestep, exclude_pairs=excl)
     @test any(mats1.obs_index.exclpairs)
     _test_jac_vs_forwarddiff(ef1, mats1.jac_func, [ones(5), randn(5)])
     # exclusion genuinely moves the Jacobian
-    _, mats1_noexcl = build_error_function(df1, _FEQ_AJ, :id, :t, :absS;
+    _, mats1_noexcl = build_error_function(df1, _FEQ, :id, :t, :absS;
         algorithm=:iv, complete_coverage=false, precision_weights=:raw_onestep)
     @test norm(mats1.jac_func(ones(5)) - mats1_noexcl.jac_func(ones(5))) > 1e-8
 
     # complete coverage with time-varying ζS
-    df2, ζtrue = _tv_zetaS_df()
-    fml = @formula(q + id & endog(p) ~ 0)
+    fx2 = _timevarying_complete_fixture()
+    df2, fml, ζtrue = fx2.df, fx2.fml, fx2.ζtrue
     ef2, mats2 = build_error_function(df2, fml, :id, :t, :S;
         algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep, exclude_pairs=excl)
     @test any(mats2.obs_index.exclpairs)
@@ -128,12 +104,12 @@ end
 end
 
 @testset "analytic Jacobian: automatic selection preserves the finite-difference root" begin
-    df = _load_simdata1_aj()
+    df = _load_simdata1()
     for alg in (:iv, :iv_twopass)
-        ef, _ = build_error_function(df, _FEQ_AJ, :id, :t, :absS;
+        ef, _ = build_error_function(df, _FEQ, :id, :t, :absS;
             algorithm=alg, complete_coverage=true, precision_weights=:raw_onestep)
         fd = nlsolve(ef, ones(5); method=:trust_region, autodiff=:central, ftol=1e-10)
-        m = giv(df, _FEQ_AJ, :id, :t, :absS; guess=ones(5), quiet=true,
+        m = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
             algorithm=alg, precision_weights=:raw_onestep,
             complete_coverage=true,
             solver_options=(; method=:trust_region, autodiff=:central, ftol=1e-10,
@@ -143,17 +119,17 @@ end
     end
 
     # Removed top-level solver selectors have no compatibility aliases.
-    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true, complete_coverage=true,
+    @test_throws MethodError giv(df, _FEQ, :id, :t, :absS; quiet=true, complete_coverage=true,
         jacobian=:analytic)
-    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true, complete_coverage=true,
+    @test_throws MethodError giv(df, _FEQ, :id, :t, :absS; quiet=true, complete_coverage=true,
         method=:trust_region)
-    @test_throws MethodError giv(df, _FEQ_AJ, :id, :t, :absS; quiet=true, complete_coverage=true,
+    @test_throws MethodError giv(df, _FEQ, :id, :t, :absS; quiet=true, complete_coverage=true,
         autodiff=:central)
 end
 
 @testset "analytic Jacobian: fewer kernel evaluations than finite differences" begin
-    df = _load_simdata1_aj()
-    ef, mats = build_error_function(df, _FEQ_AJ, :id, :t, :absS;
+    df = _load_simdata1()
+    ef, mats = build_error_function(df, _FEQ, :id, :t, :absS;
         algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
     guess = ones(5)
 

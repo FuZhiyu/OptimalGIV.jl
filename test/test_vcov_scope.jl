@@ -6,6 +6,8 @@ using OptimalGIV: calculate_entity_variance, create_observation_index,
     aggregate_elasticity_in_domain
 using DataFrames, CategoricalArrays
 
+include("vcov_test_helpers.jl")   # _load_simdata1, _FEQ, _independent_vcov (standalone-runnable)
+
 function _vcov_scope_fixture(; excluded=false)
     Random.seed!(20260722)
     N, T, K = 4, 7, 2
@@ -42,48 +44,6 @@ function _near_boundary_cue_fixture()
     u = randn(N * T)
     q = u - Cp * ζ
     return (; ζ, target_aggregate, q, u, Cp, C, S, obs_index)
-end
-
-# Independent O(N²) construction from the estimating equation. This deliberately
-# does not call the production pair catalog or period-score helper.
-function _independent_vcov(u, S, C, Cp, obs_index, precision, Mweights)
-    K, T = size(C, 2), obs_index.T
-    scores = zeros(K, T)
-    weightsum = zeros(K, T)
-    Gt = zeros(K, K, T)
-    pair_scores = [Vector{Vector{Float64}}() for _ in 1:T]
-    for t in 1:T
-        r = obs_index.start_indices[t]:obs_index.end_indices[t]
-        mt = isnothing(Mweights) ? 1.0 : Mweights[t]
-        for ii in r, jj in (ii + 1):last(r)
-            i, j = obs_index.ids[ii], obs_index.ids[jj]
-            obs_index.exclpairs[i, j] && continue
-            w = [precision[i] * S[jj] * C[ii, k] +
-                 precision[j] * S[ii] * C[jj, k] for k in 1:K]
-            d = [Cp[ii, k] * u[jj] + u[ii] * Cp[jj, k] for k in 1:K]
-            h = u[ii] * u[jj]
-            scores[:, t] .+= mt .* w .* h
-            weightsum[:, t] .+= w
-            Gt[:, :, t] .+= mt .* (w * d')
-            push!(pair_scores[t], mt .* w .* h)
-        end
-    end
-    momweight = vec(sum(abs.(weightsum); dims=2))
-    momweight ./= sum(momweight)
-    scores ./= reshape(momweight, :, 1)
-    Gt ./= reshape(momweight, :, 1, 1)
-    G = dropdims(mean(Gt; dims=3); dims=3)
-    centered_scores = scores .- mean(scores; dims=2)
-    B = centered_scores * centered_scores' / T
-    Bdiag = zeros(K, K)
-    for pair_idx in eachindex(pair_scores[1])
-        pair_series = hcat([pair_scores[t][pair_idx] ./ momweight for t in 1:T]...)
-        pair_series .-= mean(pair_series; dims=2)
-        Bdiag .+= pair_series * pair_series' / T
-    end
-    invG = inv(G)
-    Σ = invG * B * invG' / T
-    return (; Σ=Matrix(Symmetric(Σ)), G, B, Bdiag, scores)
 end
 
 @testset "masked empirical sandwich: orientation, scale, and pair scope" begin

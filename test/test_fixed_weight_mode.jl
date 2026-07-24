@@ -4,6 +4,8 @@ using OptimalGIV: build_error_function, resolve_precision, calculate_entity_vari
     estimate_giv, solve_vcov, moment_conditions, period_mweights
 using DataFrames, CSV, CategoricalArrays
 
+include("vcov_test_helpers.jl")   # _load_simdata1, _FEQ, _timevarying_complete_fixture, _independent_vcov
+
 # ---------------------------------------------------------------------------
 # Fixed raw/user precision weighting
 #
@@ -11,18 +13,6 @@ using DataFrames, CSV, CategoricalArrays
 # precisions makes the moment map an EXACT fixed quadratic in ζ under incomplete
 # coverage (no period Mweights), removing the CUE self-weighting instability.
 # ---------------------------------------------------------------------------
-
-const _SIMDATA1 = joinpath(@__DIR__, "..", "examples", "simdata1.csv")
-
-function _load_simdata1()
-    df = CSV.read(_SIMDATA1, DataFrame)
-    df.id = CategoricalArray(df.id)
-    return df
-end
-
-# numerical equivalence between :iv and :iv_twopass only holds when the endogenous
-# variable is excluded from the instrument (fe(id) & (η1+η2), no id&η)
-const _FEQ = @formula(q + id & endog(p) ~ fe(id) & (η1 + η2) + 0)
 
 @testset "fixed-weight mode: precision resolution" begin
     df = _load_simdata1()
@@ -247,67 +237,15 @@ end
 # ---------------------------------------------------------------------------
 # Complete-coverage feasible two-step: raw/custom one-step uses equal periods;
 # step 2 freezes period_mweights constructed at the step-1 root and carries the
-# same vector into its moments, Jacobian, and sandwich vcov.
+# same vector into its moments, Jacobian, and (under `vcov = :sandwich`) its
+# masked empirical sandwich. The default `vcov = :auto` route reports the
+# information formula (umbrella decisions 8, 13), so the frozen-sandwich equality
+# below is asserted against an explicit `vcov = :sandwich` fit.
 # ---------------------------------------------------------------------------
 
-# Independent O(N²) reference: build the actual masked period scores and
-# moment-by-parameter bread directly from the within-period pair loop, without
-# using the production pair catalog or score constructor.
-function _reference_sandwich_vcov(u, S, C, Cp, obs_index, prec, Mw)
-    Nmom = size(C, 2)
-    T = obs_index.T
-    scores = zeros(Nmom, T)
-    weightsum = zeros(Nmom, T)
-    Gt = zeros(Nmom, Nmom, T)
-    for t in 1:T
-        r = obs_index.start_indices[t]:obs_index.end_indices[t]
-        mw = isnothing(Mw) ? 1.0 : Mw[t]
-        for ii in r, jj in (ii+1):last(r)
-            i, j = obs_index.ids[ii], obs_index.ids[jj]
-            obs_index.exclpairs[i, j] && continue
-            w = [prec[i] * S[jj] * C[ii, k] + prec[j] * S[ii] * C[jj, k] for k in 1:Nmom]
-            d = [u[jj] * Cp[ii, k] + u[ii] * Cp[jj, k] for k in 1:Nmom]
-            scores[:, t] .+= mw .* w .* (u[ii] * u[jj])
-            weightsum[:, t] .+= w
-            Gt[:, :, t] .+= mw .* (w * d')
-        end
-    end
-    momweight = vec(sum(abs.(weightsum); dims=2))
-    momweight ./= sum(momweight)
-    scores ./= reshape(momweight, :, 1)
-    Gt ./= reshape(momweight, :, 1, 1)
-    G = dropdims(mean(Gt; dims=3); dims=3)
-    centered_scores = scores .- mean(scores; dims=2)
-    B = centered_scores * centered_scores' / T
-    invG = inv(G)
-    Σ = invG * B * invG' / T
-    return Symmetric(Σ + Σ') / 2
-end
-
-function _timevarying_complete_fixture()
-    # DGP with genuinely time-varying aggregate elasticity: sizes S_it move over t
-    # and p_t clears the market exactly.
-    Random.seed!(20260720)
-    N, T = 5, 80
-    ζtrue = [0.5, 1.0, 1.5, 2.0, 3.0]
-    Smat = rand(N, T) .^ 3 .+ 0.05
-    Smat ./= sum(Smat; dims=1)
-    umat = randn(N, T) .* (0.5 .+ rand(N))
-    p = [dot(Smat[:, t], umat[:, t]) / dot(Smat[:, t], ζtrue) for t in 1:T]
-    qmat = umat .- ζtrue * p'
-    df = DataFrame(
-        id=CategoricalArray(repeat(1:N, T)),
-        t=repeat(1:T; inner=N),
-        q=vec(qmat),
-        p=repeat(p; inner=N),
-        S=vec(Smat),
-    )
-    fml = @formula(q + id & endog(p) ~ 0)
-    return df, fml, ζtrue
-end
-
 @testset "complete-coverage two-step: frozen period-scaled moments and sandwich" begin
-    df, fml, ζtrue = _timevarying_complete_fixture()
+    fx = _timevarying_complete_fixture()
+    df, fml, ζtrue = fx.df, fx.fml, fx.ζtrue
 
     m1 = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv,
         complete_coverage=true, precision_weights=:raw_onestep)
@@ -327,24 +265,37 @@ end
     ζ2, converged2 = estimate_giv(mats.uq, mats.uCp, mats.C, mats.S, mats.obs_index,
         Val(:iv); guess=endog_coef(m1), quiet=true, complete_coverage=true,
         solver_options=solver, precision=w2, Mweights=Mw1)
+    # default (:auto) route: eligible complete-coverage two-step ⇒ information formula
     m2 = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv,
         complete_coverage=true, precision_weights=:twostep)
     @test converged2 && m2.converged
     @test endog_coef(m2) == ζ2
+    @test m2.vcov_method == :optimal
+    _, Σ_opt = OptimalGIV.solve_optimal_vcov(ζ2, mats.uq + mats.uCp * ζ2,
+        mats.S, mats.C, mats.obs_index)
+    @test vcov(m2) == Σ_opt
+
+    # `vcov = :sandwich` forces the masked empirical sandwich on the SAME frozen
+    # step-1 weight bundle used in the estimating moments.
+    m2_sand = giv(df, fml, :id, :t, :S; guess=ζtrue, quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=:twostep, vcov=:sandwich)
+    @test m2_sand.vcov_method == :sandwich
+    @test endog_coef(m2_sand) == ζ2
+    @test vcov(m2_sand) != vcov(m2)   # the two routes genuinely differ
 
     û₂ = mats.uq + mats.uCp * ζ2
     _, Σ_scaled = solve_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index;
         precision=w2, Mweights=Mw1)
-    @test vcov(m2) == Σ_scaled
+    @test vcov(m2_sand) == Σ_scaled
 
     # Teeth: recomputing period weights at the second-step root changes the vcov.
     Mw2 = period_mweights(ζ2, mats.C, mats.S, mats.obs_index)
     _, Σ_recomputed = solve_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index;
         precision=w2, Mweights=Mw2)
     @test norm(Σ_scaled - Σ_recomputed) / norm(Σ_scaled) > 1e-6
-    # independent O(N²) reference reproduces the fast implementation
-    Σ_ref = _reference_sandwich_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index,
-        w2, Mw1)
+    # independent O(N²) reference reproduces the fast sandwich implementation
+    Σ_ref = _independent_vcov(û₂, mats.S, mats.C, mats.uCp, mats.obs_index,
+        w2, Mw1).Σ
     @test Σ_scaled ≈ Σ_ref rtol = 1e-8
 end
 
@@ -430,6 +381,16 @@ end
         precision_weights=w2, complete_coverage=true)
     m_two = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
         precision_weights=:twostep, complete_coverage=true)
+    # Same weight bundle ⇒ identical point estimate.
     @test endog_coef(m_two) == endog_coef(m_fixed)
-    @test vcov(m_two) ≈ vcov(m_fixed) rtol = 1e-12
+    # The routes differ: :twostep reports the information formula, a custom vector
+    # reports the frozen sandwich. Compare like with like — a :sandwich-routed
+    # two-step reproduces the custom-vector sandwich on the same frozen weights.
+    @test m_two.vcov_method == :optimal
+    @test m_fixed.vcov_method == :sandwich
+    m_two_sand = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        precision_weights=:twostep, complete_coverage=true, vcov=:sandwich)
+    @test m_two_sand.vcov_method == :sandwich
+    @test vcov(m_two_sand) ≈ vcov(m_fixed) rtol = 1e-12
+    @test vcov(m_two) != vcov(m_two_sand)
 end

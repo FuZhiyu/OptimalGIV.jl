@@ -41,6 +41,32 @@ include("test/test_algorithm_equivalence.jl")
 include("test/test_with_simulations.jl")
 ```
 
+### Monte Carlo acceptance scripts (manual cadence)
+
+The statistical acceptance evidence lives in manual scripts, not `Pkg.test`. Their
+recorded outputs go stale silently when estimator internals change (e.g. a vcov
+routing change), so **re-run them and refresh their recorded CSVs whenever you
+touch estimator weights, the covariance route, the analytic Jacobian, or the
+`vcov` selector** — and commit the refreshed CSV in the same change:
+
+| Script | Refreshes | Run (from the monorepo root env, so the test-only deps resolve) |
+|---|---|---|
+| `test/monte_carlo_timevarying_mweights.jl` | `simresults/timevarying_mweights_performance.csv` | `julia --project=. GIV.jl/test/monte_carlo_timevarying_mweights.jl` |
+| `test/test_with_simulations.jl` | `simresults/simulation_performance.csv` (+ the per-replication diagnostics to research `output/`) | `julia --project=. -e 'include("GIV.jl/test/test_with_simulations.jl")'` |
+| `test/monte_carlo_fixed_weight.jl` | stdout report (efficiency/stability, no committed CSV) | `julia --project=. GIV.jl/test/monte_carlo_fixed_weight.jl` |
+
+Pre-registered acceptance bands are fixed in the script header BEFORE the run; a
+failed band is escalated as a finding, never retuned. The per-replication
+`simulation_benchmark_diagnostics.csv` is written to research `output/` (default
+`output/EstimateTreasuryDemandwithGIV/treasury-stability/simresults/`, override
+with `GIV_DIAGNOSTICS_DIR`), NOT into this package repo (umbrella decision 16).
+
+`Pkg.test` carries a cheap `test/test_twostep_mc_smoke.jl` tier that guards the
+two-step **routing** (`:auto`→information formula, `:sandwich`→frozen bundle) and
+gross SE calibration on a handful of seeded draws, so a routing regression trips
+the unit suite immediately instead of rotting until the next manual MC run. The
+smoke tier is a tripwire, not a replacement for the full statistical bands above.
+
 ### REPL Development
 ```julia
 # Load package in development mode

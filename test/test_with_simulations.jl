@@ -145,10 +145,18 @@ simparams_dict = Dict(row.simulated_model => row.simparamstr for row in eachrow(
 all_results = DataFrame()
 all_benchmark_diagnostics = DataFrame()
 
+# Each acceptance testset below runs inside a try/catch that records (does not
+# swallow) a tripped band, so the evidence CSV is always written and every arm can
+# be adjudicated from a single run. After the CSV is saved, any recorded failure is
+# re-raised, so a genuine regression still fails the script loudly — the resilience
+# only reorders "write evidence" before "signal failure", it does not hide it.
+testset_errors = Pair{String,Any}[]
+
 # ========================================
 # Standard Model Tests
 # ========================================
 
+try
 @testset "Standard Model Specifications" begin
     # Primary tested estimator is the package default :twostep (proxy first pass,
     # then one re-solve with precisions 1/var(û₁ᵢ)); passed explicitly so the
@@ -164,9 +172,13 @@ all_benchmark_diagnostics = DataFrame()
         ("baseline", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing, true,
             (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80,
              ζ_bias_broken=false, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false)),
+        # β coverage: the incomplete-coverage (sandwich-routed, vcov-change-agnostic)
+        # arm now lands inside the nominal band on the regenerated seed=1 fixtures at
+        # branch tip, so its previously-broken β-coverage flag is corrected to a live
+        # @test. The coverage band itself is unchanged (threshold-preserving).
         ("10% missing", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing, false,
             (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80,
-             ζ_bias_broken=true, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=true)),
+             ζ_bias_broken=true, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false)),
         ("sparse panel", @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2)), "fixed_effects", [2.0], false,
             (bias_tol=0.5, β_bias_tol=nothing, coverage_range=(0.85, 0.975), min_success=nothing,
              ζ_bias_broken=false, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false)),
@@ -246,6 +258,10 @@ all_benchmark_diagnostics = DataFrame()
             end
         end
     end
+end
+catch _e
+    push!(testset_errors, "Standard Model Specifications" => _e)
+    @warn "test_with_simulations: a band tripped in the Standard Model Specifications testset (recorded; re-raised after the evidence CSV is written)." _e
 end
 
 # ========================================
@@ -346,6 +362,7 @@ function benchmark_metrics(reps, arm, sim_label)
     return md, diagnostics
 end
 
+try
 @testset "Paired benchmark arms (:twostep / :cue / oracle)" begin
     scen_params = Dict(s.label => s.params for s in SIMULATION_SCENARIOS)
     bench_specs = [
@@ -371,14 +388,12 @@ end
                 @test perf.n_successful[1] > min_success
                 @test abs(perf.ζ_bias_mean[1]) < bias_tol
                 coverage_ok = coverage_range[1] <= perf.ζ_covered[1] <= coverage_range[2]
-                if sim_label == "concentrated" && arm == :oracle
-                    # This uses the inherited two-sided calibration band. The prior run
-                    # failed it through severe over-coverage; keep that known failure
-                    # explicit while the replication diagnostics below identify its source.
-                    @test_broken coverage_ok
-                else
-                    @test coverage_ok
-                end
+                # The concentrated-oracle arm's prior severe over-coverage (ζ_covered=1.0,
+                # mean SE≈77) came from the pre-fix sandwich covariance. With the corrected
+                # masked empirical sandwich (vcov-formula-implementation) its mean SE is now
+                # ≈6.6 and ζ_covered≈0.80, inside the inherited (0.70,0.90) band, so the
+                # previously-broken flag is corrected to a live @test. The band is unchanged.
+                @test coverage_ok
 
                 if arm == :oracle
                     converged_diag = filter(:converged => identity, diagnostics)
@@ -393,6 +408,10 @@ end
             end
         end
     end
+end
+catch _e
+    push!(testset_errors, "Paired benchmark arms" => _e)
+    @warn "test_with_simulations: a band tripped in the Paired benchmark arms testset (recorded; re-raised after the evidence CSV is written)." _e
 end
 
 # ========================================
@@ -424,6 +443,7 @@ function convergence_rate(simparamstr, formula, N; guess_kind=:true, Nsims=200,
     return (rate=ntot == 0 ? NaN : nconv / ntot, nconv=nconv, ntot=ntot)
 end
 
+try
 @testset "Concentrated scenario: :twostep guess-independence" begin
     # The standard harness always starts from the true ζ, masking the headline
     # property of the fixed-weight estimator of record: guess-independence. :twostep
@@ -463,11 +483,16 @@ end
     @test ts_ones.rate >= ts_true.rate - 0.05
     @test_broken ts_ols.rate >= ts_true.rate - 0.05
 end
+catch _e
+    push!(testset_errors, "guess-independence" => _e)
+    @warn "test_with_simulations: a band tripped in the guess-independence testset (recorded; re-raised after the evidence CSV is written)." _e
+end
 
 # ========================================
 # PC Extraction Tests
 # ========================================
 
+try
 @testset "PC Extraction Methods" begin
     # Define PC test configurations
     pc_test_configs = [
@@ -534,6 +559,10 @@ end
         end
     end
 end
+catch _e
+    push!(testset_errors, "PC Extraction" => _e)
+    @warn "test_with_simulations: a band tripped in the PC Extraction testset (recorded; re-raised after the evidence CSV is written)." _e
+end
 
 # ========================================
 # Save Results
@@ -543,10 +572,43 @@ end
 simresults_path = normpath(joinpath(@__DIR__, "..", "simresults"))
 mkpath(simresults_path)
 
-# Save all results
+# Aggregate performance summary stays in the package repo (small, referenced by
+# the acceptance story).
 CSV.write(joinpath(simresults_path, "simulation_performance.csv"), all_results)
-CSV.write(joinpath(simresults_path, "simulation_benchmark_diagnostics.csv"), all_benchmark_diagnostics)
+
+# Per-replication diagnostics dump (445 KB, referenced by nothing) does NOT belong
+# in the package repo (umbrella decision 16). Write it to research output/. Default
+# to the monorepo's output tree (this package is a submodule at <monorepo>/GIV.jl);
+# override with GIV_DIAGNOSTICS_DIR when running the package standalone.
+diagnostics_dir = get(ENV, "GIV_DIAGNOSTICS_DIR", "")
+if isempty(diagnostics_dir)
+    monorepo_output = normpath(joinpath(@__DIR__, "..", "..", "output"))
+    if isdir(monorepo_output)
+        diagnostics_dir = joinpath(monorepo_output, "EstimateTreasuryDemandwithGIV",
+            "treasury-stability", "simresults")
+    end
+end
+if isempty(diagnostics_dir)
+    @warn "No research output/ tree found and GIV_DIAGNOSTICS_DIR unset; " *
+          "skipping the per-replication diagnostics dump (it is intentionally not " *
+          "written into the package repo — umbrella decision 16)."
+else
+    mkpath(diagnostics_dir)
+    diag_path = joinpath(diagnostics_dir, "simulation_benchmark_diagnostics.csv")
+    CSV.write(diag_path, all_benchmark_diagnostics)
+    @info "Wrote per-replication benchmark diagnostics" diag_path
+end
 
 # # Also save PC-specific results for backward compatibility
 # pc_results = filter(row -> row.estimate_label in ["deflated_heteropca", "no_factors", "known_factors"], all_results)
 # CSV.write("simresults/internal_pc_simulation_performance.csv", pc_results)
+
+# Now that the evidence CSV is written, re-raise any band that tripped so a genuine
+# regression still fails the script loudly (a passing run leaves this empty).
+if !isempty(testset_errors)
+    for (name, err) in testset_errors
+        @error "test_with_simulations acceptance band tripped" testset = name exception = err
+    end
+    error("test_with_simulations: $(length(testset_errors)) acceptance testset(s) did not pass: " *
+          join(first.(testset_errors), ", ") * ". Evidence CSV was still written above.")
+end

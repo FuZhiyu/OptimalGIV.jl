@@ -13,14 +13,25 @@
 #   specified group coefficients. Entity shocks are independent Gaussian with
 #   fixed heterogeneous standard deviations.
 #
-# Pre-registered acceptance bands (not selected from estimator output):
+# PRIMARY TARGET (routing revision 2026-07-23, umbrella decisions 8/13): the
+# complete-coverage two-step estimator now reports the model-implied information
+# formula (`vcov = :auto`), so the SE-calibration and coverage bands below are
+# pre-registered against the INFORMATION-FORMULA two-step SE. The masked empirical
+# sandwich is retained as a COMPARISON arm (`vcov = :sandwich`) on the identical
+# draws; its SE/coverage are recorded but not the pre-registered gate.
+#
+# Pre-registered acceptance bands (not selected from estimator output; the SE and
+# coverage tolerances are the SAME principled bands used before the routing
+# revision, now applied to the information formula as the primary estimator):
 #   population M max/min >= 1.75 and coefficient of variation >= 0.20;
-#   each arm convergence >= 0.95 and |aggregate bias| <= 0.10;
-#   each arm 95% coverage in [0.88, 0.99];
-#   two-step mean SE / empirical SD in [0.75, 1.25];
+#   each gated arm (two-step[information], CUE, oracle) convergence >= 0.95 and
+#     |aggregate bias| <= 0.10, and 95% coverage in [0.88, 0.99];
+#   two-step[information] mean SE / empirical SD in [0.75, 1.25];
 #   SD(two-step)/SD(CUE) <= 1.20 and SD(two-step)/SD(oracle) <= 1.25;
-#   median relative L2 gap M(zetatilde) vs M(zetahat2) >= 1e-4.
-# Any failed band remains visible as @test_broken after diagnosis; bands are not
+#   median relative L2 gap M(zetatilde) vs M(zetahat2) >= 1e-4;
+#   the :sandwich-routed two-step reproduces the hand-built frozen-bundle sandwich
+#     exactly (match rate == 1.0) — an anti-tautology tooth, not an SE gate.
+# A failed band is a FINDING to escalate, not a threshold to retune; bands are not
 # changed after the run.
 # ---------------------------------------------------------------------------
 using OptimalGIV, DataFrames, CSV, Random, LinearAlgebra, Statistics, Test
@@ -121,10 +132,19 @@ function run_replication(r)
     catch
         nothing
     end
+    # default :auto route ⇒ information-formula SE (primary target)
     m2 = try
         giv(df, TVM_FORMULA, :id, :t, :S; guess, quiet=true,
             algorithm=:iv, complete_coverage=true, solver_options=TVM_SOLVER,
             precision_weights=:twostep)
+    catch
+        nothing
+    end
+    # forced sandwich route on the SAME estimator ⇒ comparison arm
+    m2s = try
+        giv(df, TVM_FORMULA, :id, :t, :S; guess, quiet=true,
+            algorithm=:iv, complete_coverage=true, solver_options=TVM_SOLVER,
+            precision_weights=:twostep, vcov=:sandwich)
     catch
         nothing
     end
@@ -137,8 +157,10 @@ function run_replication(r)
     end
 
     twostep = nothing
+    twostep_sandwich = nothing
     Mgap = missing
     sandwich_match = false
+    vcov_gap = missing
     twostep_converged = !isnothing(m1) && !isnothing(m2) && m1.converged && m2.converged
     if twostep_converged
         u1 = mats.uq + mats.uCp * endog_coef(m1)
@@ -148,9 +170,15 @@ function run_replication(r)
         u2 = mats.uq + mats.uCp * endog_coef(m2)
         _, Sigma_frozen = solve_vcov(u2, mats.S, mats.C, mats.uCp, mats.obs_index;
             precision=precision2, Mweights=M1)
-        sandwich_match = endog_vcov(m2) == Sigma_frozen
+        # anti-tautology tooth: only the :sandwich-routed fit equals the frozen
+        # bundle; the default :auto route reports the information formula.
+        sandwich_match = !isnothing(m2s) && endog_vcov(m2s) == Sigma_frozen
+        vcov_gap = norm(endog_vcov(m2) - Sigma_frozen) / norm(Sigma_frozen)
         Mgap = norm(M1 - M2) / norm(M1)
-        twostep = aggregate_result(endog_coef(m2), endog_vcov(m2))
+        twostep = aggregate_result(endog_coef(m2), endog_vcov(m2))              # information formula
+        if !isnothing(m2s) && m2s.converged
+            twostep_sandwich = aggregate_result(endog_coef(m2s), endog_vcov(m2s))  # comparison
+        end
     end
 
     cue_converged = !isnothing(mcue) && mcue.converged
@@ -158,8 +186,10 @@ function run_replication(r)
     Moracle = period_mweights(TVM_ZETA, mats.C, mats.S, mats.obs_index)
     oracle = fixed_fit(mats, guess, r.oracle_precision, Moracle)
     return (; twostep_converged,
+        twostep_sandwich_converged=!isnothing(twostep_sandwich),
         cue_converged, oracle_converged=oracle.converged,
-        twostep, cue, oracle=oracle.result, Mgap, sandwich_match)
+        twostep, twostep_sandwich, cue, oracle=oracle.result,
+        Mgap, sandwich_match, vcov_gap)
 end
 
 function summarize_arm(results, arm)
@@ -176,7 +206,8 @@ function run_tvm_mc()
     @assert all(isapprox.(vec(sum(TVM_S; dims=1)), 1.0; atol=1e-14))
     Random.seed!(TVM_SEED)
     results = [run_replication(tvm_replication()) for _ in 1:TVM_NREP]
-    summaries = [summarize_arm(results, arm) for arm in (:twostep, :cue, :oracle)]
+    summaries = [summarize_arm(results, arm)
+                 for arm in (:twostep, :twostep_sandwich, :cue, :oracle)]
     summary = DataFrame(summaries)
 
     population_aggregate = vec(TVM_ZETA_ENTITY' * TVM_S)
@@ -187,11 +218,16 @@ function run_tvm_mc()
     median_M_gap = median(Mgaps)
     sandwich_matches = [r.sandwich_match for r in results if r.twostep_converged]
     sandwich_match_rate = mean(sandwich_matches)
+    # relative Frobenius gap between the information-formula and frozen-sandwich
+    # covariances on the SAME converged draw — documents the route divergence.
+    vcov_gaps = collect(skipmissing(getproperty.(results, :vcov_gap)))
+    median_vcov_gap = median(vcov_gaps)
 
     summary.population_M_ratio .= M_ratio
     summary.population_M_cv .= M_cv
     summary.median_first_second_M_gap .= median_M_gap
     summary.twostep_frozen_sandwich_match_rate .= sandwich_match_rate
+    summary.median_optimal_sandwich_vcov_gap .= median_vcov_gap
     summary.seed .= TVM_SEED
     summary.N .= TVM_N
     summary.T .= TVM_T
@@ -206,7 +242,11 @@ function run_tvm_mc()
     @test M_cv >= TVM_BANDS.min_population_M_cv
     @test median_M_gap >= TVM_BANDS.min_median_M_gap
     @test sandwich_match_rate == 1.0
-    for row in eachrow(summary)
+    # Pre-registered gates apply to the primary information-formula two-step arm and
+    # the CUE / oracle reference arms. The :sandwich comparison arm is recorded but
+    # not gated (its point estimates match the primary arm; only its SE route differs).
+    for arm in ("twostep", "cue", "oracle")
+        row = byarm[arm]
         @test row.convergence >= TVM_BANDS.min_convergence
         @test abs(row.bias) <= TVM_BANDS.max_abs_bias
         @test TVM_BANDS.coverage[1] <= row.coverage <= TVM_BANDS.coverage[2]
