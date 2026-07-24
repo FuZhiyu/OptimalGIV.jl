@@ -170,8 +170,9 @@ Tests are organized by functionality:
 3. **Missing Data**: Package doesn't handle missing values - clean data first
 4. **Memory Usage**: Large panels with entity interactions can be memory-intensive
 5. **Exact-zero pinning**: The package has no `pin_zero` keyword — pinning a
-   coefficient at zero is exactly column subsetting of the loading matrix, and
-   is implemented outside the package. Treasury callers use the `giv_pinned`
-   wrapper in `Code/EstimateTreasuryDemandwithGIV/estimates_io_helpers.jl`,
-   which builds the reduced loading columns and re-expands the fit to the full
-   coefficient shape
+   coefficient at zero is exactly column subsetting of the loading matrix, so it
+   is implemented caller-side: build the reduced loading columns, fit, then
+   re-expand the coefficient/covariance to the full shape with exact zeros on the
+   pinned row/column. The Treasury monorepo's `giv_pinned` wrapper
+   (`Code/EstimateTreasuryDemandwithGIV/estimates_io_helpers.jl` in that repo) is
+   the reference implementation of this pattern
