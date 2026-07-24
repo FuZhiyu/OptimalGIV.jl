@@ -68,11 +68,20 @@ export coef,
         S=[1.0, 2.0, 0.5, 1.0, 2.0, 0.5, 1.0, 2.0, 0.5,],
         η=[-1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0],
     )
+    df_complete = DataFrame(;
+        id=string.([1, 2, 3, 1, 2, 3, 1, 2, 3]),
+        t=[1, 1, 1, 2, 2, 2, 3, 3, 3],
+        q=[1.0, -1.0, 0.0, 2.0, -1.0, -1.0, -1.0, 0.0, 1.0],
+        p=[1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -2.0, -2.0, -2.0],
+        S=ones(9),
+        η=[-1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0],
+    )
     f = @formula(q + id & endog(p) ~ id & η + fe(id))
-    kp = (; quiet=true, save=:all, complete_coverage=false)
     @compile_workload begin
-        giv(df, f, :id, :t, :S; algorithm=:iv, kp...)
-        giv(df, f, :id, :t, :S; algorithm=:iv_twopass, kp...)
+        giv(df, f, :id, :t, :S; quiet=true, save=:none, complete_coverage=false)
+        giv(df, f, :id, :t, :S;
+            quiet=true, save=:none, complete_coverage=false, algorithm=:iv_twopass)
+        giv(df_complete, f, :id, :t, :S; quiet=true, save=:none, complete_coverage=true)
     end
 end
 
