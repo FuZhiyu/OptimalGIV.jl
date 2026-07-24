@@ -82,6 +82,11 @@ export coef,
         giv(df, f, :id, :t, :S;
             quiet=true, save=:none, complete_coverage=false, algorithm=:iv_twopass)
         giv(df_complete, f, :id, :t, :S; quiet=true, save=:none, complete_coverage=true)
+        # save=:all, save_df=true is the configuration every real caller (including
+        # the Treasury estimator) uses; precompile it too so the sysimage/cache
+        # benefit transfers to that path, not just the save=:none smoke calls above.
+        giv(df_complete, f, :id, :t, :S;
+            quiet=true, save=:all, save_df=true, complete_coverage=true)
     end
 end
 
