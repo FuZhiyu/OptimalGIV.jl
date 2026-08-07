@@ -1,102 +1,38 @@
-"""
-    giv(df, formula, id, t, weight; <keyword arguments>)
-
-
-Estimate the GIV model given by:
-
-```math
-    q_it +  endog(p_t) × C_it' ζ = X_it' β + u_it
-```
-such that p_t is pinned down by market clearing condition Σ_i (q_it S_it) = 0, and E[u_it u_jt] = 0. 
-
-It returns a `GIVModel` object containing the estimated coefficients, standard errors, and other information.
-
-# Arguments
-
-- `df::DataFrame`: A DataFrame containing the data. Only balanced panel is supported for now. 
-    It is recommended to sort the data by `t` and `id`.
-- `formula::FormulaTerm`: A formula specifying the model. The formula should be in the form of
-    `q + (C1 + C2+...) & endog(p) ~ exog_controls`, where 
-        
-    - `q` is the response variable, 
-    - `endog(p)` indicates p is the endogenous variable,
-    - `C1, C2, ...` can be the categorical variables to specify heterogeneous loadings, or exogenous variables to be interacted with the endogenous variable; when `x` are ommited, different entities are assumed to have the same loadings.
-    - `exog_controls` are the exogenous variables. Notice that by default the model does not include an intercept term. If the mean is not zero, it is recommended to an entity fixed effect to demean the data.
-
-    For example, `formula` can be written as
-    ```julia
-    @formula(q + id & endog(p) + C & endog(p) ~ id & η + id)
-    ```
-
-
-    Also notice that 
-    - Endogenous variables are assumed to be on the left-hand side of the formula; 
-    - All categorical&Bool variables are treated as fixed effects. 
-- `id::Symbol`: The column name of the entity identifier.
-- `t::Symbol`: The column name of the time identifier. `t` and `id` should uniquely identify each observation.
-- `weight::Union{Symbol,Nothing}`: The column name of the weight variable for each entities. The weight must be non-negative. 
-    You can flip swap the sign of `q` and `weight` if necessary. 
-
-## Keyword Arguments
-
-- `guess`: Initial guess for the coefficients in front of endogenous terms. If not provided, the initial guess is set using OLS. 
-    Guess can be supplied in multiple ways:
-    - A vector in the order of coefficient enters the formula. For categorical variables the order is determined by the variable.
-    - A dictionary with the key being the name (either a string or a symbol) of the interaction term and the value being the initial guess 
-    (a vector in the case of categorical variables and a number otherwise). In the example above, the initial guess can be provided as
-    ```julia
-    guess = Dict(:id => [1.0, 2.0], :η => 0.5)
-    ```
-- `exclude_pairs::Dict{Int,Vector{Int}} = Dict()`: A dictionary specifying entity pairs to exclude from the moment conditions. 
-    Keys are entity IDs and values are vectors of entity IDs to exclude. For example:
-    ```julia
-    exclude_pairs = Dict(1 => [2, 3], 4 => [5])  # Exclude pairs (1,2), (1,3), (4,5)
-    ```
-- `algorithm::Symbol = :iv`: The algorithm to use for estimation. The default is `:iv`. The options are
-    - `:iv`: The most flexible algorithm. It uses the moment condition such that E[u_i u_{S,-i}] = 0. 
-    This algorithm uses an identity to achieve O(N) computational complexity.
-    - `:iv_twopass`: Numerically identical to `:iv` but uses a more straightforward O(N²) implementation. 
-    Useful for debugging or when the O(N) trick causes numerical issues.
-    - `:debiased_ols`: `:debiased_ols` uses the moment condition such that E[u_i C_it p_it] = 1/ζ_St σ_i^2. ]
-    It requires the adding-up constraint is satisifed so that Σ_i (q_it weight_i) = 0. 
-    If not, the aggregate elasticity will be underestimated.
-    - `:scalar_search`: `:scalar_search` uses the same moment condition `up` but requires the aggregate elasticity be constant across time. 
-    It searches for the scalar of the aggregate elasticity and hence very efficient. 
-    It can be used for diagnoises or forming initial guess for other algorithms. 
-- `quiet::Bool = false`: If `true`, suppress warnings and information messages.
-- `save::Symbol = :none`: Controls what additional information to save:
-    - `:none`: Save only the coefficients and standard errors (default)
-    - `:residuals`: Save residuals in the returned model
-    - `:fe`: Save fixed effects estimates
-    - `:all`: Save both residuals and fixed effects
-- `save_df::Bool = false`: If `true`, the processed estimation DataFrame (including residuals, fixed-effects, and coefficient columns when requested) is stored in the returned model under `df`. This can be useful for post-estimation analysis but increases memory usage.
-- `complete_coverage::Union{Nothing,Bool} = nothing`: Whether entities cover the full market. 
-    If `nothing` (default), automatically detected by checking the market clearing condition. 
-    Can be manually set to `true` or `false` for debugging purposes.
-- `return_vcov::Bool = true`: Whether to calculate and return the variance-covariance matrix.
-- `contrasts::Dict{Symbol,Any} = Dict()`: Contrasts specification for categorical variables (following StatsModels.jl conventions). Untested. Use with caution.
-- `tol::Float64 = 1e-6`: Convergence tolerance for the solver and fixed effects.
-- `iterations::Int = 100`: Maximum number of iterations for the solver.
-- `solver_options::NamedTuple`: Additional options to pass to NLsolve.jl. 
-    Default is `(; ftol=tol, show_trace=!quiet, iterations=iterations)`.
-- `pca_option::NamedTuple`: Additional options to pass to HeteroPCA.heteropca(). 
-    Default is `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`.
-
-# Output
-
-The output is `m::GIVModel`. Several important fields are:
-
-  - `endog_coef`: Coefficients on endogenous terms (vector `ζ̂`).
-  - `exog_coef`: Coefficients on exogenous control variables (vector `β`).
-  - `endog_vcov`: Variance-covariance matrix of `endog_coef`.
-  - `exog_vcov`: Variance-covariance matrix of `exog_coef`.
-  - `agg_coef`: Aggregate (or average) elasticity. Scalar if constant across time, otherwise a vector indexed by `t`.
-  - `residual_variance`: Estimated residual variance for each `id`.
-  - `coefdf::DataFrame`: Tidy DataFrame with entity-specific coefficients (and, when requested, fixed effects).
-  - `df::Union{DataFrame,Nothing}`: If `save_df = true`, the processed estimation dataset augmented with residuals, coefficients, and fixed-effects columns.
 
 """
+    resolve_precision(precision_weights, uq, obs_index)
 
+Resolve the entity precision-weight vector for the fixed-weight estimation modes.
+
+- `:cue`  → `nothing`; the moment code keeps updating `1/σᵢ²(ζ)` each evaluation
+  (continuously-updated GMM, the pre-v0.3.0 default).
+- `:raw_onestep` → `1/var(uqᵢ)` computed once from the FE/control-residualized flows,
+  with equal period weights, so the IV moment map is a fixed quadratic in ζ under
+  either coverage regime.
+- `:twostep` → the step-1 `:raw_onestep` weights. `giv()` computes both applicable
+  weight families at the first-step estimate and freezes them for the second solve;
+  `build_error_function` has no solve loop, so its exported error function is the
+  step-1 raw-weighted moment map.
+- An entity-length vector is used directly as fixed precisions in sorted entity order.
+"""
+function resolve_precision(precision_weights, uq, obs_index)
+    if precision_weights === :cue
+        return nothing
+    elseif precision_weights === :raw_onestep || precision_weights === :twostep
+        return 1 ./ calculate_entity_variance(uq, obs_index)
+    elseif precision_weights isa AbstractVector
+        length(precision_weights) == obs_index.N ||
+            throw(ArgumentError("`precision_weights` must have length N = $(obs_index.N) (got $(length(precision_weights)))."))
+        vec = collect(float.(precision_weights))
+        all(isfinite, vec) ||
+            throw(ArgumentError("custom `precision_weights` must be finite; got a non-finite entry."))
+        all(>(zero(eltype(vec))), vec) ||
+            throw(ArgumentError("custom `precision_weights` must be strictly positive; got a non-positive entry."))
+        return vec
+    else
+        throw(ArgumentError("Unknown precision_weights = $(precision_weights); use :twostep, :raw_onestep, :cue, or an entity-length vector."))
+    end
+end
 
 function giv(
     df,
@@ -110,13 +46,15 @@ function giv(
     quiet=false,
     save=:none, # :all or :fe or :none or :residuals
     save_df=false,
-    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
+    complete_coverage::Bool,
     return_vcov=true,
-    contrasts=Dict{Symbol,Any}(), # not tested; 
+    vcov::Symbol=:auto,
+    contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
     pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
+    precision_weights=nothing,  # omission sentinel; resolves to :twostep
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -143,16 +81,37 @@ function giv(
     Nζ = size(C, 2)
     Nβ = size(X_original, 2)
 
-    if isnothing(complete_coverage)
-        complete_coverage = check_market_clearing(q, S, obs_index)
+    if complete_coverage && !check_market_clearing(q, S, obs_index)
+        throw(ArgumentError("`complete_coverage=true` requires market clearing in every period, but the supplied data fail the adding-up check."))
     end
-    if !quiet &&
-       algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !complete_coverage
-        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    if algorithm ∈ [:scalar_search, :debiased_ols] && !complete_coverage
+        throw(ArgumentError("`algorithm=$(algorithm)` requires `complete_coverage=true`."))
+    end
+    if algorithm ∈ [:scalar_search, :debiased_ols] && any(obs_index.exclpairs)
+        throw(ArgumentError("`exclude_pairs` is supported only for `algorithm=:iv` or `:iv_twopass`; `algorithm=$(algorithm)` does not use pairwise moments."))
+    end
+
+    vcov ∈ (:auto, :sandwich, :optimal) ||
+        throw(ArgumentError("`vcov` must be :auto, :sandwich, or :optimal; got $(repr(vcov))."))
+
+    # Resolve the omitted keyword to the two-step default plainly. Scalar search
+    # takes no entity precision weighting, so an explicit request would be
+    # silently discarded — reject it instead. `:debiased_ols` is pinned to :cue
+    # until a fixed-weight covariance is derived for it.
+    if algorithm == :scalar_search
+        isnothing(precision_weights) || throw(ArgumentError(
+            "`precision_weights` is not used by `algorithm = :scalar_search`; remove it."))
+        precisionvec = nothing
+    else
+        isnothing(precision_weights) && (precision_weights = :twostep)
+        algorithm == :debiased_ols && precision_weights !== :cue && throw(ArgumentError(
+            "`algorithm = :debiased_ols` supports only `precision_weights = :cue`; " *
+            "fixed-weight covariance is not yet derived for it."))
+        precisionvec = resolve_precision(precision_weights, uq, obs_index)
     end
 
     guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
+    Mweights = nothing
     ζ̂, converged = estimate_giv(
         uq,
         uCp,
@@ -166,19 +125,107 @@ function giv(
         solver_options=solver_options,
         n_pcs=n_pcs,
         pca_option=pca_option,
+        precision=precisionvec,
     )
+
+    # Two-step efficient GMM (:twostep, the package default): the solve above is
+    # step 1 (:raw_onestep weights); step 2 recomputes the precisions 1/var(ûᵢ) from the
+    # step-1 residuals û₁ = uq + uCp ζ̂₁ and re-solves once with those fixed
+    # weights, warm-started at ζ̂₁. Reported estimates and SEs come from step 2;
+    # `converged` requires both steps. Iterating further would converge to a CUE
+    # root (the system is exactly identified) — deliberately not pursued, as
+    # iteration re-imports the CUE self-weighting instability.
+    if precision_weights === :twostep && algorithm != :scalar_search
+        if converged
+            precisionvec = 1 ./ calculate_entity_variance(uq + uCp * ζ̂, obs_index)
+            Mweights = complete_coverage && algorithm in (:iv, :iv_twopass) ?
+                       period_mweights(ζ̂, C, S, obs_index) : nothing
+            ζ̂, converged2 = estimate_giv(
+                uq,
+                uCp,
+                C,
+                S,
+                obs_index,
+                Val{algorithm}();
+                guess=ζ̂,
+                quiet=quiet,
+                complete_coverage=complete_coverage,
+                solver_options=solver_options,
+                n_pcs=n_pcs,
+                pca_option=pca_option,
+                precision=precisionvec,
+                Mweights=Mweights,
+            )
+            converged = converged && converged2
+        elseif !quiet
+            @warn "Two-step step 1 (:raw_onestep) did not converge; skipping step 2 and returning the non-converged step-1 estimates."
+        end
+    end
     β_q = β_ols[:, 1]
     β_Cp = β_ols[:, 2:end]
     β = β_q + β_Cp * ζ̂
 
     û = uq + uCp * ζ̂
-    if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off. 
-        if complete_coverage
-            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+    vcov_method = :none
+    if return_vcov && n_pcs == 0 # with internal PCs, the vcov calculation is off.
+        # Information-formula eligibility for the IV routes. The domain term is
+        # already folded into `converged` by `estimate_giv` for complete coverage;
+        # it is recomputed here so `:optimal` never relies on that coupling
+        # silently (planner guidance).
+        optimal_eligible = algorithm in (:iv, :iv_twopass) && complete_coverage &&
+            converged && aggregate_elasticity_in_domain(ζ̂, C, S, obs_index) &&
+            (precision_weights === :twostep || isnothing(precisionvec))
+
+        if algorithm in (:iv, :iv_twopass)
+            if vcov === :optimal && !optimal_eligible
+                reasons = String[]
+                complete_coverage || push!(reasons, "incomplete coverage")
+                (precision_weights === :twostep || isnothing(precisionvec)) ||
+                    push!(reasons, "fixed one-step or custom precision weights (only :twostep or :cue are eligible)")
+                (complete_coverage && !converged) &&
+                    push!(reasons, "non-converged or off-domain root")
+                throw(ArgumentError(
+                    "`vcov = :optimal` requires the information formula's maintained restrictions, " *
+                    "which fail here ($(join(reasons, "; "))). Use `vcov = :auto` for the sandwich fallback."))
+            end
+            use_optimal = vcov === :optimal || (vcov === :auto && optimal_eligible)
+            try
+                if use_optimal
+                    σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+                    vcov_method = :optimal
+                elseif isnothing(precisionvec)
+                    # CUE sandwich: the bread differentiates the full candidate map.
+                    σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index;
+                        ζ=ζ̂, complete_coverage=complete_coverage)
+                    vcov_method = :sandwich
+                else
+                    # Fixed-weight sandwich with the exact frozen estimating weights.
+                    σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index;
+                        precision=precisionvec, Mweights=Mweights)
+                    vcov_method = :sandwich
+                end
+            catch err
+                # A domain requirement failed at the reported root (e.g. complete-
+                # coverage CUE sandwich derivative off the positive branch). Return a
+                # non-converged fit with NaN covariance instead of letting the
+                # DomainError escape. Direct `solve_vcov` calls still throw.
+                err isa DomainError || rethrow()
+                !quiet && @warn "The requested covariance route could not be evaluated at the " *
+                    "reported root; returning NaN covariance and marking the fit non-converged." exception = err
+                σu²vec = NaN * zeros(N)
+                Σζ = NaN * zeros(length(ζ̂), length(ζ̂))
+                converged = false
+                vcov_method = :none
+            end
         else
-            # without complete coverage of the market, we do not have aggregate elasticity
-            # and hence it's not exactly optimal
-            σu²vec, Σζ = solve_vcov(û, S, C, uCp, obs_index)
+            # Full-market estimators (`:debiased_ols` pinned to :cue, `:scalar_search`)
+            # report the information formula; they have no pairwise sandwich, so
+            # `:sandwich` is rejected.
+            vcov === :sandwich && throw(ArgumentError(
+                "`vcov = :sandwich` is not available for `algorithm = $(algorithm)`; " *
+                "its covariance uses the information formula. Use `vcov = :auto` or `:optimal`."))
+            σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
+            vcov_method = :optimal
         end
         if size(X_feres, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
@@ -316,8 +363,118 @@ function giv(
         nrow(df),
         dof,
         dof_residual,
+
+        # Reproducibility: the resolved weighting mode, the frozen entity/period
+        # weight bundle actually used in the estimating moments, and the
+        # covariance route that produced `endog_vcov`.
+        precision_weights,
+        precisionvec,
+        Mweights,
+        vcov_method,
     )
 end
+
+@doc """
+    giv(df, formula, id, t, weight; <keyword arguments>)
+
+Estimate the granular instrumental-variables model
+
+```math
+q_{it} + p_t C_{it}'ζ = X_{it}'β + u_{it}
+```
+
+from panel data using cross-entity residual moment conditions and, under
+complete coverage, market clearing.
+
+# Arguments
+
+- `df`: Input panel data.
+- `formula`: A StatsModels formula of the form
+  `q + interactions & endog(p) ~ exogenous_controls`. Use `fe(...)` for
+  absorbed fixed effects and `pc(k)` for `k` common residual factors.
+- `id`: Entity-identifier column.
+- `t`: Time-identifier column. Together, `id` and `t` must identify rows.
+- `weight`: Nonnegative entity-size or market-share column.
+
+# Keyword arguments
+
+- `precision_weights = :twostep`: Entity precision weighting. For `:iv` and
+  `:iv_twopass`:
+  - `:twostep` first solves with `1 / var(uq_i)` and equal period weights. At
+    the first-step estimate `ζ̃`, it computes residual-based entity precisions
+    and, under complete coverage, period multipliers. It freezes both weight
+    families for one second solve. This is the default.
+  - `:raw_onestep` performs only the first fixed-weight solve, with equal
+    period weights.
+  - `:cue` updates residual-based precisions and complete-coverage period
+    multipliers at every candidate; this was the previous default.
+  - An entity-length vector supplies custom fixed precisions (which must be
+    finite and strictly positive) in sorted entity order and uses equal period
+    weights.
+  Omitting this keyword selects `:twostep`. The quadratic and period-weight
+  statements above apply to the IV algorithms; the specialized algorithms retain
+  their own moment definitions. `:debiased_ols` supports only `:cue` (fixed-weight
+  covariance is not yet derived for it); `:scalar_search` takes no precision
+  weighting and rejects an explicit `precision_weights`.
+- `vcov = :auto`: Covariance route. `:auto` reports the model-implied information
+  formula where it is eligible — a converged, in-domain, complete-coverage
+  `:twostep` or `:cue` IV fit — and the masked empirical sandwich otherwise.
+  `:sandwich` forces the sandwich with exactly the frozen estimating weights on
+  any supported IV route. `:optimal` requires the information formula and errors
+  where its maintained restrictions fail (incomplete coverage, fixed
+  one-step/custom weights, or a non-converged/off-domain root). The information
+  formula is efficient under the maintained second-moment model but inconsistent
+  under time-varying or cross-entity-dependent volatility, where the sandwich
+  stays consistent.
+- `guess = nothing`: Starting value for the endogenous coefficients. Accepts a
+  number, a coefficient vector, or a dictionary keyed by coefficient name. OLS
+  starting values are used when omitted.
+- `algorithm = :iv`: Estimation algorithm. `:iv` is the standard estimator;
+  `:iv_twopass` is its slower reference implementation. Both IV algorithms
+  support either coverage regime. `:debiased_ols` and `:scalar_search` are
+  separate estimators that require complete coverage.
+- `exclude_pairs = Dict()`: Entity pairs to exclude from the moment conditions,
+  supplied as `Dict(i => [j, ...])`.
+- `complete_coverage`: Required Boolean declaring whether the data design covers
+  the full market. A `true` declaration is validated against market clearing,
+  but adding-up alone is not used to infer coverage.
+- `quiet = false`: Suppress informational messages and warnings.
+- `save = :none`: Retain `:residuals`, `:fe`, `:all`, or neither (`:none`).
+- `save_df = false`: Store the processed estimation data in the returned model.
+- `return_vcov = true`: Compute variance estimates. Analytical standard errors
+  are unavailable for specifications containing `pc(k)`.
+- `contrasts = Dict()`: StatsModels contrast specifications.
+- `tol = 1e-6`: Tolerance used by estimation and fixed-effect absorption.
+- `iterations = 100`: Maximum solver iterations.
+- `solver_options`: Additional options passed to NLsolve as a named tuple.
+- `pca_option`: Options passed to HeteroPCA for specifications with `pc(k)`.
+
+For fixed-weight IV, each solve is an exact quadratic system. Under `vcov = :auto`,
+a converged, in-domain, complete-coverage `:twostep` or `:cue` fit reports the
+model-implied information (optimal) covariance on the retained pair set; raw
+one-step, custom-weight, incomplete-coverage, and non-converged fits report the
+masked empirical sandwich with the weights held fixed in their estimating
+moments. `vcov = :sandwich` forces the sandwich on any of these routes.
+
+Under complete coverage, the economic period multiplier is
+`M_t = 1 / ζS_t` on the maintained positive aggregate-elasticity domain. The
+implementation uses `1 / clamp(abs(ζS_t), sqrt(eps), Inf)` only to keep
+off-domain trial evaluations finite; a nonpositive or near-zero reported root
+is marked non-converged.
+
+# Returns
+
+A `GIVModel`. The main result accessors are:
+
+- `coef`, `stderror`, `vcov`, `confint`, and `coeftable` for the full model;
+- `endog_coef`, `endog_vcov`, `exog_coef`, and `exog_vcov` for coefficient
+  blocks;
+- `agg_coef` for the aggregate or average elasticity.
+
+Useful fields include `model.converged`, `model.coefdf`,
+`model.residual_variance`, and, when requested, `model.df`, `model.fe`, and
+`model.residual_df`.
+""" giv
 
 """
     get_coefnames(df::DataFrame, formula; contrasts=Dict{Symbol,Any}())
@@ -468,9 +625,14 @@ function create_coef_dataframe(df, formula_schema, coef, id; fekeys=[])
 end
 
 """
-Check if the market clearing condition (adding-up constraint) is satisfied for each time period.
+    check_market_clearing(q, S, obs_index)
 
-Returns true if the constraint is violated in any period.
+Return `true` if the market-clearing (adding-up) condition is satisfied in every
+nonempty period, and `false` otherwise.
+
+This is a diagnostic and a validator for `complete_coverage=true`; passing the
+check does not by itself establish that the sampled entities cover the whole
+market.
 """
 function check_market_clearing(q, S, obs_index)
     for t in 1:obs_index.T
@@ -500,7 +662,14 @@ end
 """
     build_error_function(df, formula, id, t, weight; <keyword arguments>)
 
-Export the error function for the GIV model. This function is useful for debugging and customized solvers. 
+Export the error function for the GIV model. This function is useful for debugging and customized solvers.
+
+For `build_error_function`, the default `precision_weights = :twostep` returns the
+step-1 `:raw_onestep` moment map with precisions `1/var(uqᵢ)`, because this helper
+does not run the second solve. Its period weights are therefore equal. Pass
+`precision_weights = :cue` for the continuously updated map or an entity-length
+vector for a custom fixed map. As with `giv`, `complete_coverage` is required.
+
 """
 function build_error_function(df,
     formula::FormulaTerm,
@@ -510,12 +679,15 @@ function build_error_function(df,
     exclude_pairs=Dict{Int,Vector{Int}}(),
     algorithm=:iv,
     quiet=false,
-    complete_coverage=nothing, # if nothing, we check the market clearing to determine. You can overwrite it using this keyword. 
-    contrasts=Dict{Symbol,Any}(), # not tested; 
+    complete_coverage::Bool,
+    contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
+    precision_weights=:twostep,
     kwargs...
 )
+    haskey(kwargs, :precision_mode) &&
+        throw(ArgumentError("`precision_mode` was replaced by `precision_weights`; use :twostep, :raw_onestep, :cue, or an entity-length vector."))
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
     formula_givcore, formula_schema, fes, feids, fekeys, n_pcs = separate_giv_ols_fe_formulas(df, formula; contrasts=contrasts)
@@ -536,13 +708,11 @@ function build_error_function(df,
     formula_slope = apply_schema(slope_terms, FullRank(schema(slope_terms, df, contrasts)))
     C = modelcols(collect_matrix_terms(formula_slope), df)
 
-    if isnothing(complete_coverage)
-        complete_coverage = check_market_clearing(q, S, obs_index)
+    if complete_coverage && !check_market_clearing(q, S, obs_index)
+        throw(ArgumentError("`complete_coverage=true` requires market clearing in every period, but the supplied data fail the adding-up check."))
     end
-    if !quiet &&
-       algorithm ∈ [:scalar_search, :debiased_ols] &&
-       !complete_coverage
-        throw(ArgumentError("Without complete coverage of the whole market, `up` and `scalar_search` algorithms should not be used. You can overwrite it by forcing the keyword `complete_coverage` to `true`."))
+    if algorithm ∈ [:scalar_search, :debiased_ols] && !complete_coverage
+        throw(ArgumentError("`algorithm=$(algorithm)` requires `complete_coverage=true`."))
     end
     if algorithm == :scalar_search
         # Check if panel is balanced before proceeding
@@ -569,7 +739,14 @@ function build_error_function(df,
         err_func = x -> ζS_err(x, uqmat, p, S_vec, coefmapping; kwargs...)
         return err_func, (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
     else
-        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option)
-        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs)
+        # :twostep resolves to the step-1 raw weights here (no solve loop in this export).
+        precisionvec = resolve_precision(precision_weights, uq, obs_index)
+        err_func = x -> mean_moment_conditions(x, uq, uCp, C, S, obs_index, complete_coverage, Val{algorithm}(), n_pcs, pca_option; precision=precisionvec)
+        # Exact Jacobian of the exported moment map, when defined (fixed precisions,
+        # `:iv`/`:iv_twopass`, no internal PCs); `nothing` otherwise.
+        jac_func = (!isnothing(precisionvec) && n_pcs == 0 && algorithm in (:iv, :iv_twopass)) ?
+                   (x -> mean_moment_jacobian(x, uq, uCp, C, S, obs_index, complete_coverage, precisionvec)) :
+                   nothing
+        return err_func, (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index, n_pcs=n_pcs, precision=precisionvec, jac_func=jac_func)
     end
 end

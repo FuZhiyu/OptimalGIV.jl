@@ -334,6 +334,7 @@ end
         model = giv(df, @formula(q + id & endog(p) ~ fe(id) + x + pc(1)), 
                     :id, :t, :S; 
                     algorithm = :iv,
+                    complete_coverage = false,
                     guess = [1.0, 1.5, 2.0, 2.5],  # 4 entities
                     save_df = true,
                     quiet = true,  # Suppress convergence warnings
@@ -393,6 +394,7 @@ end
         model = giv(df, @formula(q + id & endog(p) ~ fe(id) + x + pc(1)), 
                     :id, :t, :S; 
                     algorithm = :iv,
+                    complete_coverage = false,
                     guess = [1.0, 1.5, 2.0, 2.5],  # 4 entities
                     save_df = true,
                     quiet = true,  # Suppress convergence warnings
@@ -612,7 +614,7 @@ end
         ]
             model = giv(df_base, formula, :id, :t, :S; 
                        algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
-                       save=save_opt, quiet=true)
+                       save=save_opt, quiet=true, complete_coverage=false)
             
             # Check fixed effects
             if check_fe
@@ -639,7 +641,7 @@ end
         formula_no_fe = @formula(q + endog(p) ~ x1 + x2)
         model_no_fe = giv(df_base, formula_no_fe, :id, :t, :S; 
                          algorithm=:iv, guess=0.5, 
-                         save=:fe, quiet=true)
+                         save=:fe, quiet=true, complete_coverage=false)
         @test isnothing(model_no_fe.fe)
     end
     
@@ -649,7 +651,7 @@ end
         formula = @formula(q + id & endog(p) ~ x1 + fe(t))
         model_savedf = giv(df_base, formula, :id, :t, :S; 
                           algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
-                          save_df=true, save=:all, quiet=true)
+                          save_df=true, save=:all, quiet=true, complete_coverage=false)
         
         @test !isnothing(model_savedf.df)
         @test nrow(model_savedf.df) == nrow(df_base)
@@ -661,7 +663,7 @@ end
         formula_no_cat = @formula(q + endog(p) ~ x1 + x2)
         model_no_cat = giv(df_base, formula_no_cat, :id, :t, :S; 
                           algorithm=:iv, guess=0.5, 
-                          save_df=true, quiet=true)
+                          save_df=true, quiet=true, complete_coverage=false)
         
         @test !isnothing(model_no_cat.df)
         @test nrow(model_no_cat.df) == nrow(df_base)
@@ -672,7 +674,7 @@ end
         formula_pc = @formula(q + id & endog(p) ~ x1 + pc(2))
         model_pc = giv(df_base, formula_pc, :id, :t, :S; 
                       algorithm=:iv, guess=[1.0, 1.5, 2.0, 2.5], 
-                      save_df=true, quiet=true)
+                      save_df=true, quiet=true, complete_coverage=false)
         
         @test !isnothing(model_pc.df)
         @test "pc_factor_1" in names(model_pc.df)
@@ -697,7 +699,7 @@ end
         formula_edge = @formula(q + group & endog(p) ~ x + fe(id))
         model_edge = giv(df_edge, formula_edge, :id, :t, :S; 
                         algorithm=:iv, guess=[1.0, 1.5, 2.0], 
-                        save=:fe, save_df=true, quiet=true)
+                        save=:fe, save_df=true, quiet=true, complete_coverage=false)
         
         # Check that both group coefficients and id fixed effects are present
         @test "group" in names(model_edge.coefdf)
@@ -717,7 +719,7 @@ end
         formula_edge2 = @formula(q + endog(p) ~ x + fe(id) + fe(t))
         model_edge2 = giv(df_edge2, formula_edge2, :id, :t, :S; 
                          algorithm=:iv, guess=0.5, 
-                         save=:all, save_df=true, quiet=true)
+                         save=:all, save_df=true, quiet=true, complete_coverage=false)
         
         # coefdf should have no categorical columns initially (crossjoin case)
         # but after FE merge, should have id and t
