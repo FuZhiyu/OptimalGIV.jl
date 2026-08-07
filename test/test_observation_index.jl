@@ -119,6 +119,22 @@ using DataFrames, CategoricalArrays
         @test exclmat[2, 3] == false # pair (2,3) not excluded
         @test exclmat[1, 4] == false # pair (1,4) not excluded
     end
+
+    @testset "Exclusions Follow Sorted IDs in Unbalanced Panels" begin
+        df = DataFrame(
+            id = [1, 2, 10, 1, 2, 10, 5, 1, 2, 5, 10],
+            t = [1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3],
+        )
+
+        # Entity 5 enters late, so first-appearance order [1, 2, 10, 5]
+        # differs from the sorted entity-index order [1, 2, 5, 10].
+        obs_index = create_observation_index(df, :id, :t, Dict(2 => [10]))
+
+        @test count(obs_index.exclpairs) == 2
+        @test obs_index.exclpairs[2, 4]
+        @test obs_index.exclpairs[4, 2]
+        @test !obs_index.exclpairs[2, 3] # pair (2, 5) remains included
+    end
     
     @testset "Vector to Matrix Conversion" begin
         # Test with balanced panel

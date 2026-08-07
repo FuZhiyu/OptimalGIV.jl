@@ -103,7 +103,7 @@ function create_observation_index(df, id, t, exclude_pairs=Dict{Int,Vector{Int}}
         entity_obs_indices[entity_id, time_id] = i  # Store actual observation index
     end
 
-    exclpairs = create_exclusion_matrix(unique(df[!, id]), exclude_pairs)
+    exclpairs = create_exclusion_matrix(unique_ids, exclude_pairs)
 
     return ObservationIndex(start_indices, end_indices, ids, entity_obs_indices, exclpairs, N, T)
 end
