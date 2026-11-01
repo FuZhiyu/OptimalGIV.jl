@@ -73,6 +73,41 @@ end
         algorithm=:scalar_search, complete_coverage=false)
 end
 
+@testset "market-clearing check does not depend on the units of q" begin
+    df = _load_simdata1()
+    _, mats = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=true, precision_weights=:raw_onestep)
+    obs_index = mats.obs_index
+
+    # Clearing data keep clearing, however large the flows.
+    for scale in (1e-12, 1.0, 1e12)
+        @test check_market_clearing(df.q .* scale, df.absS, obs_index)
+    end
+    rescaled = copy(df)
+    rescaled.q .*= 1e12
+    @test giv(rescaled, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+        complete_coverage=true, precision_weights=:raw_onestep, return_vcov=false).converged
+
+    # Non-clearing data stay rejected, however small the flows.
+    for scale in (1e-12, 1.0, 1e12)
+        @test !check_market_clearing(fill(scale, nrow(df)), df.absS, obs_index)
+    end
+    small = copy(df)
+    small.q = fill(1e-6, nrow(df))
+    @test_throws ArgumentError giv(small, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true,
+        complete_coverage=true, precision_weights=:raw_onestep)
+
+    # One period off by 1% of its gross flow is enough to fail.
+    first_period = obs_index.start_indices[1]:obs_index.end_indices[1]
+    gross = sum(abs, df.q[first_period] .* df.absS[first_period])
+    shifted = copy(df.q)
+    shifted[first_period[1]] += 0.01 * gross / df.absS[first_period[1]]
+    @test !check_market_clearing(shifted, df.absS, obs_index)
+
+    # A period with no flows clears.
+    @test check_market_clearing(zeros(nrow(df)), df.absS, obs_index)
+end
+
 @testset "algorithm × coverage × precision compatibility matrix" begin
     df = _load_simdata1()
     _, mats = build_error_function(df, _FEQ, :id, :t, :absS;

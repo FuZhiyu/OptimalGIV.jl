@@ -23,7 +23,7 @@ function resolve_precision(precision_weights, uq, obs_index)
     elseif precision_weights isa AbstractVector
         length(precision_weights) == obs_index.N ||
             throw(ArgumentError("`precision_weights` must have length N = $(obs_index.N) (got $(length(precision_weights)))."))
-        vec = collect(float.(precision_weights))
+        vec = Vector{Float64}(precision_weights)
         all(isfinite, vec) ||
             throw(ArgumentError("custom `precision_weights` must be finite; got a non-finite entry."))
         all(>(zero(eltype(vec))), vec) ||
@@ -32,6 +32,56 @@ function resolve_precision(precision_weights, uq, obs_index)
     else
         throw(ArgumentError("Unknown precision_weights = $(precision_weights); use :twostep, :raw_onestep, :cue, or an entity-length vector."))
     end
+end
+
+"""
+    resolve_weighting_mode(precision_weights, algorithm)
+
+Return the weighting mode for `algorithm`, resolving an omitted (`nothing`) keyword:
+`:twostep` for the IV algorithms, `:cue` for `:debiased_ols`, and `nothing` for
+`:scalar_search`, which takes no entity precision weighting. `:debiased_ols` is
+pinned to `:cue` until a fixed-weight covariance is derived for it.
+"""
+function resolve_weighting_mode(precision_weights, algorithm)
+    if algorithm == :scalar_search
+        isnothing(precision_weights) || throw(ArgumentError(
+            "`precision_weights` is not used by `algorithm = :scalar_search`; remove it."))
+        return nothing
+    end
+    isnothing(precision_weights) && return algorithm == :debiased_ols ? :cue : :twostep
+    algorithm == :debiased_ols && precision_weights !== :cue && throw(ArgumentError(
+        "`algorithm = :debiased_ols` supports only `precision_weights = :cue`; " *
+        "fixed-weight covariance is not yet derived for it."))
+    return precision_weights
+end
+
+"""
+    validate_vcov_request(vcov, precision_weights, algorithm, complete_coverage, return_vcov, n_pcs)
+
+Reject an explicit `vcov` request that the specification already rules out, before
+the solve. Failures that depend on the estimate are checked after it.
+"""
+function validate_vcov_request(vcov, precision_weights, algorithm, complete_coverage, return_vcov, n_pcs)
+    vcov === :auto && return nothing
+    return_vcov || throw(ArgumentError(
+        "`vcov = $(repr(vcov))` requests a covariance, but `return_vcov = false`."))
+    n_pcs == 0 || throw(ArgumentError(
+        "`vcov = $(repr(vcov))` is unavailable: analytical covariance is not computed with `pc(k)`."))
+    if algorithm in (:iv, :iv_twopass)
+        vcov === :optimal || return nothing
+        reasons = String[]
+        complete_coverage || push!(reasons, "incomplete coverage")
+        precision_weights in (:twostep, :cue) ||
+            push!(reasons, "fixed one-step or custom precision weights (only :twostep or :cue are eligible)")
+        isempty(reasons) || throw(ArgumentError(
+            "`vcov = :optimal` requires the information formula's maintained restrictions, " *
+            "which fail here ($(join(reasons, "; "))). Use `vcov = :auto` for the sandwich fallback."))
+    elseif vcov === :sandwich
+        throw(ArgumentError(
+            "`vcov = :sandwich` is not available for `algorithm = $(algorithm)`; " *
+            "its covariance uses the information formula. Use `vcov = :auto` or `:optimal`."))
+    end
+    return nothing
 end
 
 function giv(
@@ -54,7 +104,7 @@ function giv(
     iterations=100,
     solver_options=(; ftol=tol, show_trace=!quiet, iterations=iterations),
     pca_option=(; impute_method=:zero, demean=false, maxiter=100, algorithm=DeflatedHeteroPCA(t_block=10)),
-    precision_weights=nothing,  # omission sentinel; resolves to :twostep
+    precision_weights=nothing,  # omission sentinel; :twostep (:cue for :debiased_ols)
 )
     formula = replace_function_term(formula) # FunctionTerm is inconvenient for saving&loading across Module
     df = preprocess_dataframe(df, formula, id, t, weight)
@@ -94,21 +144,12 @@ function giv(
     vcov ∈ (:auto, :sandwich, :optimal) ||
         throw(ArgumentError("`vcov` must be :auto, :sandwich, or :optimal; got $(repr(vcov))."))
 
-    # Resolve the omitted keyword to the two-step default plainly. Scalar search
-    # takes no entity precision weighting, so an explicit request would be
-    # silently discarded — reject it instead. `:debiased_ols` is pinned to :cue
-    # until a fixed-weight covariance is derived for it.
-    if algorithm == :scalar_search
-        isnothing(precision_weights) || throw(ArgumentError(
-            "`precision_weights` is not used by `algorithm = :scalar_search`; remove it."))
-        precisionvec = nothing
-    else
-        isnothing(precision_weights) && (precision_weights = :twostep)
-        algorithm == :debiased_ols && precision_weights !== :cue && throw(ArgumentError(
-            "`algorithm = :debiased_ols` supports only `precision_weights = :cue`; " *
-            "fixed-weight covariance is not yet derived for it."))
-        precisionvec = resolve_precision(precision_weights, uq, obs_index)
-    end
+    precision_weights = resolve_weighting_mode(precision_weights, algorithm)
+    validate_vcov_request(vcov, precision_weights, algorithm, complete_coverage, return_vcov, n_pcs)
+    precisionvec = isnothing(precision_weights) ? nothing :
+                   resolve_precision(precision_weights, uq, obs_index)
+    # Record the validated Vector{Float64}, not the caller's array.
+    precision_weights isa AbstractVector && (precision_weights = precisionvec)
 
     guessvec = parse_guess(endog_coefnames, guess, Val{algorithm}())
     Mweights = nothing
@@ -177,17 +218,9 @@ function giv(
             (precision_weights === :twostep || isnothing(precisionvec))
 
         if algorithm in (:iv, :iv_twopass)
-            if vcov === :optimal && !optimal_eligible
-                reasons = String[]
-                complete_coverage || push!(reasons, "incomplete coverage")
-                (precision_weights === :twostep || isnothing(precisionvec)) ||
-                    push!(reasons, "fixed one-step or custom precision weights (only :twostep or :cue are eligible)")
-                (complete_coverage && !converged) &&
-                    push!(reasons, "non-converged or off-domain root")
-                throw(ArgumentError(
-                    "`vcov = :optimal` requires the information formula's maintained restrictions, " *
-                    "which fail here ($(join(reasons, "; "))). Use `vcov = :auto` for the sandwich fallback."))
-            end
+            vcov === :optimal && !optimal_eligible && throw(ArgumentError(
+                "`vcov = :optimal` requires a converged, in-domain root, which failed here. " *
+                "Use `vcov = :auto` for the sandwich fallback."))
             use_optimal = vcov === :optimal || (vcov === :auto && optimal_eligible)
             try
                 if use_optimal
@@ -212,20 +245,24 @@ function giv(
                 err isa DomainError || rethrow()
                 !quiet && @warn "The requested covariance route could not be evaluated at the " *
                     "reported root; returning NaN covariance and marking the fit non-converged." exception = err
-                σu²vec = NaN * zeros(N)
+                σu²vec = calculate_entity_variance(û, obs_index)
                 Σζ = NaN * zeros(length(ζ̂), length(ζ̂))
                 converged = false
                 vcov_method = :none
             end
         else
             # Full-market estimators (`:debiased_ols` pinned to :cue, `:scalar_search`)
-            # report the information formula; they have no pairwise sandwich, so
-            # `:sandwich` is rejected.
-            vcov === :sandwich && throw(ArgumentError(
-                "`vcov = :sandwich` is not available for `algorithm = $(algorithm)`; " *
-                "its covariance uses the information formula. Use `vcov = :auto` or `:optimal`."))
+            # report the information formula; they have no pairwise sandwich.
+            # `estimate_giv` folds the domain check into `converged` for both.
+            vcov === :optimal && !converged && throw(ArgumentError(
+                "`vcov = :optimal` requires a converged, in-domain root, which failed here."))
             σu²vec, Σζ = solve_optimal_vcov(ζ̂, û, S, C, obs_index)
             vcov_method = :optimal
+        end
+        if !quiet && vcov_method === :sandwich && length(ζ̂) >= obs_index.T
+            @warn "The sandwich covariance is singular: its meat has rank below T = " *
+                  "$(obs_index.T), but there are $(length(ζ̂)) moments. Single-coefficient " *
+                  "standard errors may still be usable; joint tests and contrasts are not."
         end
         if size(X_feres, 2) > 0
             ols_vcov = solve_ols_vcov(σu²vec, X_feres, obs_index)
@@ -411,7 +448,7 @@ complete coverage, market clearing.
   - An entity-length vector supplies custom fixed precisions (which must be
     finite and strictly positive) in sorted entity order and uses equal period
     weights.
-  Omitting this keyword selects `:twostep`. The quadratic and period-weight
+  Omitting this keyword selects `:twostep`, or `:cue` for `:debiased_ols`. The quadratic and period-weight
   statements above apply to the IV algorithms; the specialized algorithms retain
   their own moment definitions. `:debiased_ols` supports only `:cue` (fixed-weight
   covariance is not yet derived for it); `:scalar_search` takes no precision
@@ -422,7 +459,8 @@ complete coverage, market clearing.
   `:sandwich` forces the sandwich with exactly the frozen estimating weights on
   any supported IV route. `:optimal` requires the information formula and errors
   where its maintained restrictions fail (incomplete coverage, fixed
-  one-step/custom weights, or a non-converged/off-domain root). The information
+  one-step/custom weights, or a non-converged/off-domain root). An explicit
+  `:sandwich` or `:optimal` errors with `pc(k)` or `return_vcov = false`. The information
   formula is efficient under the maintained second-moment model but inconsistent
   under time-varying or cross-entity-dependent volatility, where the sandwich
   stays consistent.
@@ -628,13 +666,15 @@ end
     check_market_clearing(q, S, obs_index)
 
 Return `true` if the market-clearing (adding-up) condition is satisfied in every
-nonempty period, and `false` otherwise.
+nonempty period, and `false` otherwise. A period clears when
+`|Σᵢ qᵢ Sᵢ| ≤ eps^(1/4) Σᵢ |qᵢ Sᵢ|`, so the check does not depend on the units of `q`.
 
 This is a diagnostic and a validator for `complete_coverage=true`; passing the
 check does not by itself establish that the sampled entities cover the whole
 market.
 """
 function check_market_clearing(q, S, obs_index)
+    tolerance = eps(eltype(q))^(1 / 4)
     for t in 1:obs_index.T
         start_idx = obs_index.start_indices[t]
         end_idx = obs_index.end_indices[t]
@@ -644,14 +684,16 @@ function check_market_clearing(q, S, obs_index)
             continue
         end
 
-        # Calculate the sum of q*S for this time period
-        weighted_sum = 0.0
+        # Net and gross size-weighted flows for this time period
+        net_flow = 0.0
+        gross_flow = 0.0
         for idx in start_idx:end_idx
-            weighted_sum += q[idx] * S[idx]
+            flow = q[idx] * S[idx]
+            net_flow += flow
+            gross_flow += abs(flow)
         end
 
-        # Check if sum exceeds tolerance
-        if weighted_sum^2 > sqrt(eps(eltype(q)))
+        if abs(net_flow) > tolerance * gross_flow
             return false  # Constraint violated
         end
     end
@@ -664,11 +706,13 @@ end
 
 Export the error function for the GIV model. This function is useful for debugging and customized solvers.
 
-For `build_error_function`, the default `precision_weights = :twostep` returns the
-step-1 `:raw_onestep` moment map with precisions `1/var(uqᵢ)`, because this helper
-does not run the second solve. Its period weights are therefore equal. Pass
-`precision_weights = :cue` for the continuously updated map or an entity-length
-vector for a custom fixed map. As with `giv`, `complete_coverage` is required.
+`precision_weights` resolves as in `giv`: omitted means `:twostep` for the IV
+algorithms and `:cue` for `:debiased_ols`, and the same combinations are rejected.
+Under `:iv`, `:twostep` returns the step-1 `:raw_onestep` moment map with precisions
+`1/var(uqᵢ)`, because this helper does not run the second solve. Its period weights
+are therefore equal. Pass `precision_weights = :cue` for the continuously updated map
+or an entity-length vector for a custom fixed map. As with `giv`, `complete_coverage`
+is required.
 
 """
 function build_error_function(df,
@@ -683,7 +727,7 @@ function build_error_function(df,
     contrasts=Dict{Symbol,Any}(), # not tested;
     tol=1e-6,
     pca_option=(; impute_method=:zero, demean=false, maxiter=1000),
-    precision_weights=:twostep,
+    precision_weights=nothing,  # omission sentinel, as in `giv`
     kwargs...
 )
     haskey(kwargs, :precision_mode) &&
@@ -714,6 +758,10 @@ function build_error_function(df,
     if algorithm ∈ [:scalar_search, :debiased_ols] && !complete_coverage
         throw(ArgumentError("`algorithm=$(algorithm)` requires `complete_coverage=true`."))
     end
+    if algorithm ∈ [:scalar_search, :debiased_ols] && any(obs_index.exclpairs)
+        throw(ArgumentError("`exclude_pairs` is supported only for `algorithm=:iv` or `:iv_twopass`; `algorithm=$(algorithm)` does not use pairwise moments."))
+    end
+    precision_weights = resolve_weighting_mode(precision_weights, algorithm)
     if algorithm == :scalar_search
         # Check if panel is balanced before proceeding
         N, T = obs_index.N, obs_index.T

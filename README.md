@@ -304,6 +304,7 @@ Numerically identical to `:iv` but uses a more straightforward O(N²) implementa
 ### 3. `:debiased_ols`
 Uses the moment condition E[u_i C_it p_it] = 1/ζ_St σ_i². Requires the sampled entities to cover the full market and the adding-up constraint to hold. More efficient when applicable but more restrictive.
 - PC extraction: Not supported with this algorithm
+- Weighting: `:cue` only, which is used when `precision_weights` is omitted; fixed-weight modes are rejected
 
 ### 4. `:scalar_search`
 Efficient algorithm when the aggregate elasticity is constant across time. Searches for a scalar aggregate elasticity value. Useful for diagnostics or forming initial guesses. Requires:

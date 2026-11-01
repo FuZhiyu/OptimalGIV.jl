@@ -1,4 +1,4 @@
-using Test, OptimalGIV, Random, LinearAlgebra, ForwardDiff, Statistics
+using Test, OptimalGIV, Random, LinearAlgebra, ForwardDiff, Statistics, Logging
 using OptimalGIV: calculate_entity_variance, create_observation_index,
     masked_period_scores, mean_moment_conditions, moment_conditions,
     period_mweights, solve_optimal_vcov, solve_vcov,
@@ -178,15 +178,18 @@ end
         deb_mats.C, deb_mats.obs_index)
     @test vcov(debiased) == deb_ref
 
-    # Decision 14: fixed-weight modes are rejected for :debiased_ols (including
-    # the resolved :twostep default), and it has no pairwise sandwich.
+    # Decision 14: fixed-weight modes are rejected for :debiased_ols, an omitted
+    # keyword resolves to its only supported mode, and it has no pairwise sandwich.
     for pw in (:raw_onestep, :twostep, ones(5))
         @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
             quiet=true, algorithm=:debiased_ols, complete_coverage=true,
             precision_weights=pw)
     end
-    @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
-        quiet=true, algorithm=:debiased_ols, complete_coverage=true)
+    omitted = giv(df, formula, :id, :t, :absS; guess=[1.0], quiet=true,
+        algorithm=:debiased_ols, complete_coverage=true)
+    @test omitted.precision_weights === :cue
+    @test coef(omitted) == coef(debiased)
+    @test vcov(omitted) == vcov(debiased)
     @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
         quiet=true, algorithm=:debiased_ols, complete_coverage=true,
         precision_weights=:cue, vcov=:sandwich)
@@ -400,6 +403,95 @@ end
     @test custom.vcov_method == :sandwich
 end
 
+@testset "custom precision weights: any real vector" begin
+    df = _load_simdata1()
+    fit(w) = giv(df, _FEQ, :id, :t, :absS; guess=ones(5), quiet=true, algorithm=:iv,
+        complete_coverage=true, precision_weights=w)
+    reference = fit(ones(5))
+    for w in (fill(1, 5), ones(Float32, 5), view(ones(10), 1:5))
+        m = fit(w)
+        @test m.precision_weights isa Vector{Float64}
+        @test m.entity_precision isa Vector{Float64}
+        @test coef(m) == coef(reference)
+    end
+
+    # The model keeps its own record of the weights.
+    w = ones(5)
+    m = fit(w)
+    w[1] = 2.0
+    @test m.precision_weights == ones(5)
+end
+
+@testset "explicit vcov requests fail before the solve" begin
+    df = _load_simdata1()
+    pc_formula = @formula(q + endog(p) ~ 0 + pc(1))
+    for request in (:optimal, :sandwich)
+        @test_throws ArgumentError giv(df, pc_formula, :id, :t, :absS; guess=[1.0],
+            quiet=true, complete_coverage=false, vcov=request)
+        @test_throws ArgumentError giv(df, _FEQ, :id, :t, :absS; guess=ones(5),
+            quiet=true, complete_coverage=true, return_vcov=false, vcov=request)
+    end
+
+    # Failures the specification already implies, named by reason.
+    @test_throws r"incomplete coverage" OptimalGIV.validate_vcov_request(
+        :optimal, :twostep, :iv, false, true, 0)
+    @test_throws r"custom precision" OptimalGIV.validate_vcov_request(
+        :optimal, ones(5), :iv, true, true, 0)
+    @test_throws r"not available" OptimalGIV.validate_vcov_request(
+        :sandwich, :cue, :debiased_ols, true, true, 0)
+    @test isnothing(OptimalGIV.validate_vcov_request(:optimal, :cue, :debiased_ols, true, true, 0))
+    @test isnothing(OptimalGIV.validate_vcov_request(:auto, :raw_onestep, :iv, false, false, 2))
+
+    # The defaults stay valid on both routes.
+    fit = giv(df, pc_formula, :id, :t, :absS; guess=[1.0], quiet=true,
+        complete_coverage=false, return_vcov=false)
+    @test fit.vcov_method == :none
+end
+
+@testset "vcov = :optimal needs a converged root on the full-market estimators" begin
+    df = _load_simdata1()
+    formula = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+    capped = (; guess=[1.0], quiet=true, algorithm=:debiased_ols, complete_coverage=true,
+        precision_weights=:cue, solver_options=(; ftol=1e-14, iterations=1))
+    @test_throws ArgumentError giv(df, formula, :id, :t, :absS; vcov=:optimal, capped...)
+    @test !giv(df, formula, :id, :t, :absS; capped...).converged
+end
+
+@testset "build_error_function resolves weights as giv does" begin
+    df = _load_simdata1()
+    formula = @formula(q + endog(p) ~ 0 + fe(id) & (η1 + η2))
+    debiased = (; algorithm=:debiased_ols, complete_coverage=true)
+    err_omitted, mats_omitted = build_error_function(df, formula, :id, :t, :absS; debiased...)
+    err_cue, _ = build_error_function(df, formula, :id, :t, :absS;
+        precision_weights=:cue, debiased...)
+    @test isnothing(mats_omitted.precision)
+    @test err_omitted([1.5]) == err_cue([1.5])
+
+    @test_throws ArgumentError build_error_function(df, formula, :id, :t, :absS;
+        precision_weights=:twostep, debiased...)
+    @test_throws ArgumentError build_error_function(df, formula, :id, :t, :absS;
+        exclude_pairs=Dict(1 => [2]), precision_weights=:cue, debiased...)
+    @test_throws ArgumentError build_error_function(df, formula, :id, :t, :absS;
+        algorithm=:scalar_search, complete_coverage=true, precision_weights=:cue)
+
+    # An omitted IV keyword is still the step-1 raw map.
+    _, omitted = build_error_function(df, _FEQ, :id, :t, :absS; complete_coverage=true)
+    _, raw = build_error_function(df, _FEQ, :id, :t, :absS; complete_coverage=true,
+        precision_weights=:raw_onestep)
+    @test omitted.precision == raw.precision
+end
+
+@testset "sandwich warns when moments reach T" begin
+    df = _load_simdata1()
+    periods = sort(unique(df.t))[1:4]
+    short = df[in.(df.t, Ref(periods)), :]
+    fit(quiet) = giv(short, @formula(q + id & endog(p) ~ 0 + id), :id, :t, :absS;
+        guess=ones(5), quiet, complete_coverage=false, precision_weights=:raw_onestep,
+        solver_options=(; ftol=1e-6, iterations=100))
+    @test (@test_logs (:warn, r"singular") match_mode=:any fit(false)).vcov_method == :sandwich
+    @test_logs min_level=Logging.Warn fit(true)
+end
+
 @testset "vcov selector: input validation" begin
     df = _load_simdata1()
     _, mats = build_error_function(df, _FEQ, :id, :t, :absS; algorithm=:iv,
@@ -461,6 +553,9 @@ end
     @test !m.converged
     @test all(isnan, vcov(m))
     @test m.vcov_method == :none
+    # The covariance failed, not the residuals: entity variances stay usable.
+    @test m.residual_variance ==
+          calculate_entity_variance(mats.uq + mats.uCp * endog_coef(m), mats.obs_index)
 
     # Direct solve_vcov at the same off-domain root keeps its throwing behavior.
     û = mats.uq + mats.uCp * endog_coef(m)
