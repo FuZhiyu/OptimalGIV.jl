@@ -59,7 +59,7 @@ Pre-registered acceptance bands are fixed in the script header BEFORE the run; a
 failed band is escalated as a finding, never retuned. The per-replication
 `simulation_benchmark_diagnostics.csv` is written to research `output/` (default
 `output/EstimateTreasuryDemandwithGIV/treasury-stability/simresults/`, override
-with `GIV_DIAGNOSTICS_DIR`), NOT into this package repo (umbrella decision 16).
+with `GIV_DIAGNOSTICS_DIR`), NOT into this package repo.
 
 `Pkg.test` carries a cheap `test/test_twostep_mc_smoke.jl` tier that guards the
 two-step **routing** (`:auto`→information formula, `:sandwich`→frozen bundle) and
@@ -138,7 +138,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 - `:raw_onestep` and custom entity weights use equal period weights and one fixed-weight solve
 - `:twostep` first uses raw entity weights and equal period weights; it computes entity precisions and complete-coverage period weights at the first-step estimate, then freezes both for one second solve
 - `:cue` recomputes every applicable weight at each candidate estimate
-- Fixed-weight IV solves are exact quadratic systems under both coverage regimes
+- Without `pc(k)`, fixed-weight IV solves are exact quadratic systems under both coverage regimes
 - `vcov` selects the covariance route: `:auto` (default) reports the information-formula covariance for an eligible fit — converged, complete-coverage, in-domain `:twostep` or `:cue` — and the masked sandwich (exact frozen estimating weights, same non-excluded pairs) otherwise; `:sandwich` forces the sandwich on any supported route; `:optimal` requires the information formula and errors where its restrictions fail. `:raw_onestep` and custom-weight fits are never eligible for the information formula
 - The economic multiplier is `M_t = 1 / ζS_t` for positive aggregate elasticity. The absolute-value clamp is only a finite off-domain iteration rule; final complete-coverage roots must satisfy the positive-domain check
 
@@ -146,7 +146,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 - Unbalanced panels supported for `:iv` algorithms
 - Every estimator entry point requires an explicit `complete_coverage::Bool`
 - Complete coverage is an economic property of the data design; in-sample market clearing validates `true` but does not select the regime
-- Complete coverage is required for `:debiased_ols` and `:scalar_search`; only `:iv` and `:iv_twopass` accept incomplete coverage
+- Complete coverage is required for `:debiased_ols` and `:scalar_search`; only `:iv` and `:iv_twopass` accept incomplete coverage or `exclude_pairs`
 
 #### Error Function Export
 `build_error_function()` returns the raw moment condition function and matrices, enabling:
@@ -161,6 +161,11 @@ Tests are organized by functionality:
 - `test_interface.jl`: API and input validation
 - `test_estimates.jl`: Estimation accuracy against known values
 - `test_algorithm_equivalence.jl`: Consistency across algorithms
+- `test_fixed_weight_mode.jl`: Weighting modes, two-step freezing, and API compatibility
+- `test_vcov_scope.jl`, `test_vcov_coincidence_fixtures.jl`: Covariance routing, exclusions, and known-answer covariance fixtures
+- `test_analytic_jacobian.jl`: Analytic Jacobian against automatic differentiation
+- `test_nonfinite_guards.jl`: `NonfiniteMomentError` diagnosis
+- `test_twostep_mc_smoke.jl`: Cheap two-step routing and SE calibration tripwire
 - `test_with_simulations.jl`: Monte Carlo validation (slow, excluded from CI)
 
 ## Common Pitfalls

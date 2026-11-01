@@ -158,9 +158,8 @@ testset_errors = Pair{String,Any}[]
 
 try
 @testset "Standard Model Specifications" begin
-    # Primary tested estimator is the package default :twostep (proxy first pass,
-    # then one re-solve with precisions 1/var(û₁ᵢ)); passed explicitly so the
-    # one-time sentinel warning stays out of the test logs. Thresholds are the SAME
+    # Primary tested estimator is the package default :twostep (raw first pass,
+    # then one re-solve with precisions 1/var(û₁ᵢ)). Thresholds are the SAME
     # bars the CUE reference had to clear — MC evidence (giv-solver-stability/
     # twostep-default, cue-favorable-efficiency-mc) shows two-step matches CUE's
     # bias/SD/coverage — so they are inherited, not retuned. The now-redundant :cue
@@ -203,8 +202,8 @@ try
              ζ_bias_broken=false, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false))
     ]
 
-    # Primary arm: the package-default :twostep, passed explicitly (no reliance on the
-    # sentinel). The now-redundant :cue/:raw_onestep sweep is dropped; :cue/oracle benchmark
+    # Primary arm: the package-default :twostep, passed explicitly.
+    # The now-redundant :cue/:raw_onestep sweep is dropped; :cue/oracle benchmark
     # arms run below on two representative fixtures, :raw_onestep in test_fixed_weight_mode.jl.
     for (sim_label, formula, estimate_label, guess, complete_coverage, test_params) in standard_test_configs
         @testset "$estimate_label [:twostep]: $sim_label" begin

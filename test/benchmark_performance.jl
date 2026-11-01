@@ -60,3 +60,4 @@ q, p, C, Cp, η, S, exclmat, obs_index = GIV.generate_matrices(df, f, id, t, wei
 # qmat, pmat, Cts, ηts, Smat, uqmat, λq, uCpts, λCp, meanqmat, meanpmat, meanCpts, meanηts = OptimalGIV.generate_matrices(df, f, id, t, weight; algorithm = :iv, quiet = false)
 
 # @time Cqq, CqCp, CCpq, CCpCp, qq, Cpq, CpCp = OptimalGIV.compuate_covariance_tensors(uqmat, uCpts, Cts)
+

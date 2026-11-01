@@ -8,9 +8,14 @@
 
 Estimate models using granular instrumental variables (GIV), with efficient weighting schemes.
 
-The core algorithms are tested using simulations, but the documentation is under development and minor features may contain bugs. Feature requests and bug reports are welcome. For details of the model and estimator, see [the companion paper](https://fuzhiyu.me/TreasuryGIVPaper/Treasury_GIV_draft.pdf).
+The core algorithms are tested using simulations. Feature requests and bug reports are welcome. For details of the model and estimator, see [the companion paper](https://fuzhiyu.me/TreasuryGIVPaper/Treasury_GIV_draft.pdf).
 
 For Python users, a Python wrapper can be found [here](https://github.com/FuZhiyu/optimalgiv).
+
+> [!IMPORTANT]
+> v0.4.0 introduces a feasible two-step estimator, `precision_weights=:twostep`, and makes it the default for `:iv` and `:iv_twopass` in place of the continuous updating estimator of earlier versions (`:cue`), for solver stability. The moment conditions weight each entity by its precision, $1/\operatorname{var}(u_i)$, and, under complete coverage, each period by the multiplier $M_t=1/\zeta_{S,t}$. Both weights depend on the elasticities, and `:cue` recomputes them at every candidate. `:twostep` instead solves once with precisions from `q` residualized on the controls and equal period weights, recomputes both weights at that estimate, freezes them, and solves once more. Pass `precision_weights=:cue` to recover earlier estimates.
+>
+> `complete_coverage` is now required, and standard errors change for incomplete-coverage and `exclude_pairs` fits. See the [release notes](https://github.com/FuZhiyu/OptimalGIV.jl/releases).
 
 ### Model Specification
 
@@ -32,11 +37,6 @@ The model is estimated with the moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$
 
 Unbalanced panels are allowed. The caller must declare whether the sampled entities cover the full market with `complete_coverage=true` or `false`. In-sample adding-up, $\sum_i S_{i,t}q_{i,t}=0$, is required when complete coverage is declared, but it cannot establish that omitted entities do not exist. The package therefore validates `true` rather than inferring coverage from adding-up.
 
-> [!NOTE]
-> `precision_weights` defaults to `:twostep` (feasible two-step GMM); the
-> earlier default was continuously updated GMM (`:cue`). Pass
-> `precision_weights = :cue` explicitly to reproduce that estimator.
-
 
 ## Installation
 
@@ -57,10 +57,10 @@ using OptimalGIV, DataFrames
 df = simulate_data((; M = 0.5, N = 10), Nsims = 1, seed = 1)[1]
 
 # Estimate the model
-model = giv(df,
-    @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)),
+model = giv(df, 
+    @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)), 
     :id, :t, :S;
-    algorithm = :iv,
+    algorithm = :iv, 
     complete_coverage = true,
     precision_weights = :twostep,
     save = :all, # fixed effects will also be saved in the coefdf
@@ -69,15 +69,15 @@ model = giv(df,
 
 # View results
 println(model)
-#                       GIVModel (Aggregate coef: 2.21)
+#                       GIVModel (Aggregate coef: 2.21)                      
 # ───────────────────────────────────────────────────────────────────────────
 #             Estimate  Std. Error   t-stat  Pr(>|t|)    Lower 95%  Upper 95%
 # ───────────────────────────────────────────────────────────────────────────
-# id: 1 & p    3.58315    1.39997   2.55945    0.0106   0.835899      6.33039
-# id: 10 & p   2.85081    0.567497  5.02347    <1e-06   1.73717       3.96444
-# id: 2 & p    2.07155    0.592432  3.49668    0.0005   0.908981      3.23411
-# id: 3 & p    1.17017    0.593346  1.97216    0.0489   0.00581219    2.33453
-# id: 4 & p    1.17624    0.608863  1.93187    0.0537  -0.0185676     2.37105
+# id: 1 & p    3.58314    1.39997   2.55945    0.0106   0.835828      6.33046
+# id: 10 & p   2.85081    0.567497  5.02347    <1e-06   1.73714       3.96447
+# id: 2 & p    2.07155    0.592432  3.49668    0.0005   0.908951      3.23414
+# id: 3 & p    1.17017    0.593346  1.97216    0.0489   0.00578455    2.33456
+# id: 4 & p    1.17624    0.608863  1.93187    0.0537  -0.0185964     2.37108
 # ...
 ```
 
@@ -91,10 +91,10 @@ The formula interface generally follows the [`StatsModel.jl`](https://github.com
 ```
 
 - `q`: Response variable (e.g., quantity)
-- `endog(p)`: Endogenous variable (e.g., price). Endogenous variables appear on the left-hand side; hence positive coefficients indicate negative responses of `q` on `p` (downward-sloping demand curve).
+- `endog(p)`: Endogenous variable (e.g., price). Endogenous variables appear on the left-hand side; hence positive coefficients indicate negative responses of `q` on `p` (downward-sloping demand curve). 
 - `interactions`: Exogenous variables to parameterize heterogeneous elasticities (e.g., entity identifiers or characteristics)
 - `exog_controls`: Exogenous control variables. Fixed effects as in `FixedEffectModels.jl` are allowed.
-- `pc(k)`: Principal component extraction with `k` factors (optional). When specified, `k` common factors are extracted from residuals using HeteroPCA.jl
+- `pc(k)`: Principal component extraction with `k` factors (optional). When specified, `k` common factors are extracted from residuals using HeteroPCA.jl 
 
 
 #### Examples of formulas:
@@ -128,13 +128,13 @@ giv(df, formula, id, t, weight; kwargs...)
 - `df`: DataFrame with panel data (must be balanced for some algorithms)
 - `formula`: Model specification using `@formula`
 - `id`: Symbol for entity identifier column
-- `t`: Symbol for time identifier column
+- `t`: Symbol for time identifier column  
 - `weight`: Symbol for entity weights/sizes (e.g., market shares)
 
 #### Keyword Arguments:
 - `algorithm`: `:iv` (default), `:debiased_ols`, `:scalar_search`, or `:iv_twopass`
 - `guess`: Initial parameter guess (vector, number, or Dict)
-- `exclude_pairs`: Dictionary specifying entity pairs to exclude from moment conditions.
+- `exclude_pairs`: Dictionary of `id` values specifying entity pairs to exclude from moment conditions. Only `:iv` and `:iv_twopass` accept it.
   Example: `Dict(1 => [2, 3], 4 => [5])` excludes pairs (1,2), (1,3), and (4,5)
 - `quiet`: Suppress warnings and information messages if true (default: false)
 - `save`: Save additional information - `:none` (default), `:residuals`, `:fe`, or `:all`
@@ -146,8 +146,8 @@ giv(df, formula, id, t, weight; kwargs...)
 - `contrasts`: Contrasts specification for categorical variables (following StatsModels.jl). Untested. Use with cautions.
 - `tol`: Convergence tolerance (default: 1e-6)
 - `iterations`: Maximum iterations (default: 100)
-- `solver_options`: Options passed to `NLsolve.jl` as a named tuple
-- `pca_option`: Options for HeteroPCA.jl PC extraction (default: `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`)
+- `solver_options`: Options for the nonlinear solvers from `NLsolve.jl`. Fixed-weight IV solves without `pc(k)` use the analytic Jacobian and ignore `autodiff`.
+- `pca_option`: Options for HeteroPCA.jl PC extraction (default: `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`) 
 
 ### Working with Results
 
@@ -181,6 +181,10 @@ exog_coefnames(model)    # Names of exogenous-term coefficients
 
 model.coefdf             # DataFrame with entity-specific coefficients (see below)
 model.converged          # Convergence status
+model.precision_weights  # Resolved weighting mode
+model.entity_precision   # Fixed entity precisions in the final solve (nothing under :cue)
+model.period_weights     # Frozen period weights (nothing unless complete-coverage :twostep)
+model.vcov_method        # Covariance route: :optimal, :sandwich, or :none
 model.n_pcs              # Number of principal components extracted
 model.pc_factors         # PC factors (k×T matrix, or nothing if n_pcs=0)
 model.pc_loadings        # PC loadings (N×k matrix, or nothing if n_pcs=0)
@@ -216,14 +220,14 @@ Example:
 # Access the coefficient DataFrame
 first(model.coefdf, 5)
 # 5×4 DataFrame
-#  Row │ id      id & p_coef  id & η1_coef  id & η2_coef  fe_id
-#      │ String  Float64      Float64       Float64       Float64
+#  Row │ id      id & p_coef  id & η1_coef  id & η2_coef  fe_id     
+#      │ String  Float64      Float64       Float64       Float64   
 # ─────┼────────────────────────────────────────────────────────────
-#    1 │ 1           3.58315     6.67398         1.95733  0.550752
-#    2 │ 10          2.85081    -0.0851448       1.68483  0.0775327
+#    1 │ 1           3.58314     6.67398         1.95733  0.550752
+#    2 │ 10          2.85081    -0.0851456       1.68483  0.0775326
 #    3 │ 2           2.07155     2.87146         2.91998  0.738134
 #    4 │ 3           1.17017     3.55465         4.05976  0.36872
-#    5 │ 4           1.17624     0.542161        1.91074  0.470043
+#    5 │ 4           1.17624     0.542163        1.91074  0.470043
 ```
 
 ## Estimator Weighting
@@ -245,6 +249,9 @@ then computes both applicable weight families at $\widetilde{\zeta}$ and holds
 them fixed during the single step-2 solve for $\widehat{\zeta}_2$. It does not
 update weights within step 2.
 
+The exact-quadratic entries assume no `pc(k)`, because internal factor loadings
+move with $\zeta$.
+
 The paper defines $M_t=1/\zeta_{S,t}$ on the maintained domain
 $\zeta_{S,t}>0$. To keep trial evaluations finite during nonlinear iteration,
 the package evaluates a normalized version of
@@ -265,6 +272,10 @@ its restrictions fail. The information formula is efficient under a
 maintained second-moment model (time-constant entity variances,
 cross-entity-independent second moments); the sandwich stays consistent when
 that model fails, so the robust alternative is one keyword away.
+
+`:debiased_ols` and `:scalar_search` always report the information formula and
+reject `vcov=:sandwich`. An explicit `:sandwich` or `:optimal` errors with
+`pc(k)` or `return_vcov=false`.
 
 The sandwich's Jacobian follows the orientation of the pairwise IV estimating
 equations themselves — it is the empirical bread/meat estimator, distinct
@@ -288,20 +299,20 @@ Every call must specify the coverage regime. `:debiased_ols` and
 ### 1. `:iv` (Instrumental Variables)
 The most flexible algorithm using the moment condition E[u_i u_{S,-i}] = 0. This is the default and recommended algorithm for most applications. It uses an efficient O(N) implementation. It allows for:
 
-- Exclude certain pairs $E[u_i u_j] = 0$ from the moment conditions;
-- Flexible elasticity specifications;
+- Exclude certain pairs $E[u_i u_j] = 0$ from the moment conditions; 
+- Flexible elasticity specifications; 
 - Unbalanced panel with incomplete market coverage;
 - PC extraction: Supports internal factor extraction using `pc(k)` in formulas
 
-### 2. `:iv_twopass`
+### 2. `:iv_twopass` 
 Numerically identical to `:iv` but uses a more straightforward O(N²) implementation with two passes over entity pairs. This is useful for:
 - Debugging purposes
 - When the O(N) optimization in `:iv` might cause numerical issues
-- When there are many pairs to be excluded, which will slow down the algorithm in :iv.
+- When there are many pairs to be excluded, which will slow down the algorithm in :iv. 
 - Understanding the computational flow of the moment conditions
 - PC extraction: Supports internal factor extraction using `pc(k)` in formulas
 
-### 3. `:debiased_ols`
+### 3. `:debiased_ols` 
 Uses the moment condition E[u_i C_it p_it] = 1/ζ_St σ_i². Requires the sampled entities to cover the full market and the adding-up constraint to hold. More efficient when applicable but more restrictive.
 - PC extraction: Not supported with this algorithm
 - Weighting: `:cue` only, which is used when `precision_weights` is omitted; fixed-weight modes are rejected
@@ -312,16 +323,17 @@ Efficient algorithm when the aggregate elasticity is constant across time. Searc
 - Constant weights across time
 - Complete market coverage
 - PC extraction: Not supported with this algorithm
+- Weighting: Takes no `precision_weights`; an explicit value is rejected
 
 ## Internal PCA
 
 Internal PC extractions are supported. With internal PCs, the moment conditions become $\mathbb E[u_{i,t}u_{j,t}] = \Lambda \Lambda'$, where $\Lambda$ is the factor loadings estimated internally using [HeteroPCA.jl](https://github.com/FuZhiyu/HeteroPCA.jl) from $u_{i,t}(z) \equiv q_{i,t} + p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{z}$ at each guess of $z$. However, following caveats apply:
 
-- With internal PC extraction, the weighting scheme is no longer optimal as it does not consider the covariance in the moment conditions due to common factor estimation. The standard error formula also no longer applies and hence was not returned. One can consider bootstrapping for statistical inference;
+- With internal PC extraction, the weighting scheme is no longer optimal as it does not consider the covariance in the moment conditions due to common factor estimation. The standard error formula also no longer applies and hence was not returned. One can consider bootstrapping for statistical inference; 
 
-- In small samples, the exactly root solving the moment condition may not exist, and users may want to use an minimizer to minimize the error instead.
+- In small samples, the exactly root solving the moment condition may not exist, and users may want to use an minimizer to minimize the error instead. 
 
-- A model with fully flexible elasticity specification and fully flexible internal factor loadings is not theoretically identifiable. Hence, one needs to assume certain level of homogeneity to estimate factors internally.
+- A model with fully flexible elasticity specification and fully flexible internal factor loadings is not theoretically identifiable. Hence, one needs to assume certain level of homogeneity to estimate factors internally. 
 
 ## Initial Guesses
 
@@ -345,7 +357,7 @@ guess = Dict("Aggregate" => 2.5)
 
 To see the order of coefficients or get the coefficient labels, one can use the helper function:
 ```julia
-response, endog_name, endog_coefnames, exog_coefnames, slope_terms =
+response, endog_name, endog_coefnames, exog_coefnames, slope_terms = 
     get_coefnames(df, formula)
 ```
 
@@ -361,10 +373,10 @@ The `build_error_function` API allows you to extract the error function and low-
 
 ```julia
 # Export the error function and components
-err_func, components = build_error_function(df,
-    @formula(q + endog(p) ~ fe(id) + id & (η1 + η2)),
+err_func, components = build_error_function(df,     
+    @formula(q + endog(p) ~ fe(id) + id & (η1 + η2)), 
     :id, :t, :S;
-    algorithm = :iv,
+    algorithm = :iv, 
     complete_coverage = true,
     precision_weights = :raw_onestep,
 )
@@ -387,7 +399,7 @@ For homogeneous-elasticity models or the scalar-search algorithm, you can use in
 # Plot the error function over an interval
 using Plots
 ζ_range = 0.5:0.01:3.0
-plot(x-> err_func([x])[1], ζ_range, xlabel="Elasticity", ylabel="Error",
+plot(x-> err_func([x])[1], ζ_range, xlabel="Elasticity", ylabel="Error", 
      title="Error Function Structure")
 
 # Find all roots in an interval
@@ -440,6 +452,7 @@ The `simulate_data` function accepts a NamedTuple with the following parameters:
 - `ushare`: Share of price variation explained by idiosyncratic shocks (default: 0.2 if K>0)
 - `σᵤcurv`: Curvature for size-dependent volatility (default: 0.1)
 - `ν`: Degrees of freedom for t-distribution (default: Inf = Normal)
+- `ζalign`: Alignment of elasticities with shock volatilities: 0 = independent, -1 = largest ζ on smallest-σᵤ entities, +1 = aligned (default: 0)
 - `missingperc`: Percentage of missing values (default: 0.0)
 
 The generated data follows:
@@ -451,7 +464,7 @@ The generated data follows:
 
 - **PC extraction limitations**: Only `:iv` and `:iv_twopass` algorithms support internal PC extraction. The `:debiased_ols` and `:scalar_search` algorithms do not support PC extraction.
 - **Variance-covariance matrix**: When PC extraction is used (`pc(k)` in formula), the variance-covariance matrix calculation is automatically disabled as it is not correct. One should consider bootstrapping instead.
-- Time fixed effects are not supported directly, but one can use a single factor `pc(1)` instead;
+- Time fixed effects are not supported directly, but one can use a single factor `pc(1)` instead; 
 - Some algorithms require balanced panels
 - The `:debiased_ols` and `:scalar_search` algorithms require complete market coverage; only `:iv` and `:iv_twopass` support incomplete coverage
 - Coverage must be supplied explicitly; an in-sample adding-up check cannot establish that the dataset includes the whole market

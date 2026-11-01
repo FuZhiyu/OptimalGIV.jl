@@ -1,3 +1,15 @@
+"""
+    estimate_giv(q, Cp, C, S, obs_index, algorithm; complete_coverage, guess=nothing,
+                 quiet=false, solver_options=(;), n_pcs=0, pca_option,
+                 precision=nothing, Mweights=nothing)
+
+Solve `mean_moment_conditions = 0` for `ζ` and return `(ζ̂, converged)`.
+
+`q` and `Cp` are the residualized response and endogenous columns, so residuals are
+`u = q + Cp ζ`. `C` holds the elasticity loadings and `S` the sizes. `precision` and
+`Mweights` are described in [`moment_conditions`](@ref). Under complete coverage, a
+root outside the positive aggregate-elasticity domain returns `converged = false`.
+"""
 function estimate_giv(
     q,
     Cp,
@@ -57,8 +69,8 @@ function estimate_giv(
         nlsolve(fmom, guess; solver_options...)
     end
 
-    ζ̂ = res.zero
     converged = res.f_converged
+    ζ̂ = res.zero
     if complete_coverage && !aggregate_elasticity_in_domain(ζ̂, C, S, obs_index)
         converged = false
         !quiet && @warn "The reported root has nonpositive or near-zero aggregate elasticity under complete coverage."
@@ -71,6 +83,12 @@ function estimate_giv(
     return ζ̂, converged
 end
 
+"""
+    moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, Val(:iv_twopass), n_pcs=0, pca_option; precision=nothing, Mweights=nothing)
+
+O(N²) reference implementation of the `:iv` moments, looping over pairs directly.
+See the `Val(:iv)` method for the moment and its weights.
+"""
 function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv_twopass}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
@@ -78,7 +96,7 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 
     # Calculate residuals
     u = q + Cp * ζ
-
+    
     # Extract PCs and update residuals if requested
     loadings_matrix = Matrix{eltype(ζ)}(undef, N, n_pcs)  # N×n_pcs matrix for type stability
     if n_pcs > 0
@@ -175,6 +193,23 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
+"""
+    moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, Val(:iv), n_pcs=0, pca_option; precision=nothing, Mweights=nothing)
+
+Return the `Nmom × T` matrix of pairwise moments at `ζ`. Entry `(m, t)` sums
+`precᵢ Cᵢₘ Sⱼ (uᵢuⱼ - λᵢ'λⱼ)` over ordered pairs `i ≠ j` observed in period `t` and
+not excluded. The factor term `λᵢ'λⱼ` is zero unless `n_pcs > 0`.
+
+Three weights apply:
+
+- `precision` weights entities. `nothing` recomputes `1/σᵢ²(ζ)` at each `ζ` (CUE);
+  a vector is held fixed.
+- `Mweights` weights periods under complete coverage, multiplying column `t`. CUE
+  recomputes it with [`period_mweights`](@ref); with fixed `precision` the supplied
+  value is used, and `nothing` means equal weights. It changes the estimator.
+- `momweight` rescales each row for numerical stability. The system is exactly
+  identified, so this does not move the root.
+"""
 function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:iv}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing)
 
     Nm = length(ζ)
@@ -221,6 +256,13 @@ end
 # ----------------------------------------------------------------------
 #  FAST  O(N)  PASS   (fills only `err`)
 # ----------------------------------------------------------------------
+"""
+    fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings_matrix, n_pcs=0)
+
+Fill `err` and `weightsum` in place with the all-pairs sums for each period in O(N):
+a product of period aggregates minus the `i = j` diagonal. Excluded pairs are still
+included here; [`deduct_excluded_pairs!`](@ref) removes them.
+"""
 function fast_pass!(weightsum, err, u, C, S, prec, obs_index, loadings_matrix=Matrix{eltype(err)}(undef, 0, 0), n_pcs=0)
     Nm = size(err, 1)
     T = obs_index.T
@@ -305,6 +347,11 @@ end
 # ----------------------------------------------------------------------
 #  SECOND PASS  – deduct excluded pairs from err and weightsum
 # ----------------------------------------------------------------------
+"""
+    deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings_matrix, n_pcs=0)
+
+Subtract the pairs marked in `obs_index.exclpairs` from `err` and `weightsum` in place.
+"""
 function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadings_matrix=Matrix{eltype(err)}(undef, 0, 0), n_pcs=0)
     Nmom = size(err, 1)
     T = obs_index.T
@@ -390,13 +437,21 @@ function deduct_excluded_pairs!(err, weightsum, C, S, u, prec, obs_index, loadin
 end
 
 
+"""
+    moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, Val(:debiased_ols), n_pcs=0, pca_option; precision=nothing, Mweights=nothing)
+
+Return the `Nmom × T` debiased-OLS moments at `ζ`. Entry `(m, t)` sums
+`precᵢ (uᵢ Cpᵢₘ - uᵢ² Cᵢₘ Sᵢ / ζS_t)` over entities observed in period `t`, with
+`prec` normalized to sum to one. Requires complete coverage and `n_pcs = 0`.
+`Mweights` is accepted for a common signature and is not used.
+"""
 function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{:debiased_ols}, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing)
     if n_pcs > 0
         throw(ArgumentError("PC extraction (n_pcs > 0) is not yet supported for the :debiased_ols algorithm. Use :iv_twopass instead."))
     end
 
     Nmom = length(ζ)
-    T = obs_index.T
+    N, T = obs_index.N, obs_index.T
 
     # Calculate residuals
     u = q + Cp * ζ
@@ -449,6 +504,11 @@ function moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, ::Val{
 end
 
 
+"""
+    mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option; precision=nothing, Mweights=nothing)
+
+Average [`moment_conditions`](@ref) over periods: the `Nmom` vector the solver sets to zero.
+"""
 mean_moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs=0, pca_option=(; impute_method=:zero, demean=false, maxiter=1000); precision=nothing, Mweights=nothing) =
     vec(mean(moment_conditions(ζ, q, Cp, C, S, obs_index, complete_coverage, algorithm, n_pcs, pca_option; precision=precision, Mweights=Mweights); dims=2))
 
@@ -559,6 +619,12 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
     return J
 end
 
+"""
+    solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage)
+
+Return the aggregate elasticity `ζS_t = Σᵢ Sᵢₜ Cᵢₜ'ζ` for each period. Under incomplete
+coverage it is divided by `Σᵢ Sᵢₜ`, giving the size-weighted average of observed entities.
+"""
 function solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage::Bool)
     Nmom = length(ζ)
     ζSvec = zeros(eltype(ζ), obs_index.T)
@@ -591,9 +657,22 @@ function period_mweights(ζ, C, S, obs_index)
     return Mweights
 end
 
+"""
+    resolve_period_mweights(ζ, C, S, obs_index, complete_coverage, precision, Mweights)
+
+Return the period weights the moments use: `nothing` under incomplete coverage,
+[`period_mweights`](@ref) at `ζ` under CUE (`precision === nothing`), and the supplied
+frozen `Mweights` otherwise.
+"""
 resolve_period_mweights(ζ, C, S, obs_index, complete_coverage, precision, Mweights) =
     !complete_coverage ? nothing : isnothing(precision) ? period_mweights(ζ, C, S, obs_index) : Mweights
 
+"""
+    aggregate_elasticity_in_domain(ζ, C, S, obs_index)
+
+Return `true` if `ζS_t` exceeds the clamp boundary `√eps` in every period. A final
+complete-coverage root must satisfy this.
+"""
 function aggregate_elasticity_in_domain(ζ, C, S, obs_index)
     ζS = solve_aggregate_elasticity(ζ, C, S, obs_index; complete_coverage=true)
     return all(>(sqrt(eps(eltype(ζS)))), ζS)
@@ -614,6 +693,13 @@ function admissible_pair_indices(obs_index)
     return [I[1] for I in inds], [I[2] for I in inds]
 end
 
+"""
+    solve_optimal_vcov(ζ, u, S, C, obs_index)
+
+Return `(σu²vec, Σζ)` from the information formula over the admissible pairs of
+[`admissible_pair_indices`](@ref). It assumes complete coverage and uses `M_t = 1/ζS_t`
+unclamped, so the caller must check that `ζ` is in the positive domain.
+"""
 function solve_optimal_vcov(ζ, u, S, C, obs_index)
     Nmom = length(ζ)
     N, T = obs_index.N, obs_index.T
@@ -726,6 +812,11 @@ function masked_period_scores(u, S, C, Cp, obs_index, precision, Mweights; bread
     return scores, G
 end
 
+"""
+    _central_difference_jacobian(f, x)
+
+Central-difference Jacobian of `f` at `x`, with step `cbrt(eps) * max(|xₖ|, 1)`.
+"""
 function _central_difference_jacobian(f, x)
     fx = f(x)
     J = zeros(promote_type(eltype(fx), eltype(x)), length(fx), length(x))
@@ -739,6 +830,13 @@ function _central_difference_jacobian(f, x)
     return J
 end
 
+"""
+    _positive_domain_jacobian(f, x, C, S, obs_index)
+
+Finite-difference Jacobian whose evaluations all stay in the domain `ζS_t > √eps`. It
+uses a central difference when both steps fit, and otherwise a second-order one-sided
+difference toward the side with more room. Throws `DomainError` at or too near the boundary.
+"""
 function _positive_domain_jacobian(f, x, C, S, obs_index)
     T, K = obs_index.T, length(x)
     aggregate_loadings = zeros(promote_type(eltype(x), eltype(C), eltype(S)), T, K)

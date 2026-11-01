@@ -39,7 +39,7 @@ struct GIVModel <: StatisticalModel
     dof::Int64
     dof_residual::Int64
 
-    # Reproducibility of the weighting/covariance route (giv-solver-stability):
+    # Reproducibility of the weighting/covariance route:
     # the resolved precision-weight mode, the frozen entity precisions and period
     # multipliers held fixed in the estimating moments, and the covariance route
     # (`:optimal`, `:sandwich`, or `:none`) that produced `endog_vcov`.
