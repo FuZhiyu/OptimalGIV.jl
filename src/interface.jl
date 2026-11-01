@@ -49,9 +49,9 @@ complete coverage, market clearing.
   one-step/custom weights, or a non-converged/off-domain root). An explicit
   `:sandwich` or `:optimal` errors with `pc(k)` or `return_vcov = false`.
   `:debiased_ols` and `:scalar_search` always report the information formula and
-  reject `:sandwich`. If the selected route cannot be evaluated at the reported
-  root, `giv` warns, returns NaN covariance, and marks the fit non-converged. The
-  information formula is efficient under the maintained second-moment model but
+  reject `:sandwich`. If an IV covariance route fails its domain requirement at
+  the reported root, `giv` warns, returns NaN covariance, and marks the fit
+  non-converged. The information formula is efficient under the maintained second-moment model but
   inconsistent under time-varying or cross-entity-dependent volatility, where the
   sandwich stays consistent.
 - `guess = nothing`: Starting value for the endogenous coefficients. Accepts a

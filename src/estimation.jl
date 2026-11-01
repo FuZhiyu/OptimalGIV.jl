@@ -697,8 +697,9 @@ end
     solve_optimal_vcov(ζ, u, S, C, obs_index)
 
 Return `(σu²vec, Σζ)` from the information formula over the admissible pairs of
-[`admissible_pair_indices`](@ref). It assumes complete coverage and uses `M_t = 1/ζS_t`
-unclamped, so the caller must check that `ζ` is in the positive domain.
+[`admissible_pair_indices`](@ref). It assumes complete coverage, uses `M_t = 1/ζS_t`
+unclamped, and does not check the positive domain: the IV routes gate on it, and the
+full-market routes report it through `converged`.
 """
 function solve_optimal_vcov(ζ, u, S, C, obs_index)
     Nmom = length(ζ)

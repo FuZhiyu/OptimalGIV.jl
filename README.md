@@ -13,7 +13,7 @@ The core algorithms are tested using simulations. Feature requests and bug repor
 For Python users, a Python wrapper can be found [here](https://github.com/FuZhiyu/optimalgiv).
 
 > [!IMPORTANT]
-> v0.4.0 introduces a feasible two-step estimator, `precision_weights=:twostep`, and makes it the default for `:iv` and `:iv_twopass` in place of the continuous updating estimator of earlier versions (`:cue`), for solver stability. The moment conditions weight each entity by its precision, $1/\operatorname{var}(u_i)$, and, under complete coverage, each period by the multiplier $M_t=1/\zeta_{S,t}$. Both weights depend on the elasticities, and `:cue` recomputes them at every candidate. `:twostep` instead solves once with precisions from `q` residualized on the controls and equal period weights, recomputes both weights at that estimate, freezes them, and solves once more. Pass `precision_weights=:cue` to recover earlier estimates.
+> v0.4.0 introduces a feasible two-step estimator, `precision_weights=:twostep`, and makes it the default for `:iv` and `:iv_twopass` in place of the continuous updating estimator of earlier versions (`:cue`), for solver stability. The moment conditions weight each entity by its precision, $1/\operatorname{var}(u_i)$, and, under complete coverage, each period by the multiplier $M_t=1/\zeta_{S,t}$. Both weights depend on the elasticities, and `:cue` recomputes them at every candidate. `:twostep` instead solves once with precisions from `q` residualized on the controls and equal period weights, recomputes both weights at that estimate, freezes them, and solves once more. Pass `precision_weights=:cue` to recover earlier point estimates.
 >
 > `complete_coverage` is now required, and standard errors change for incomplete-coverage and `exclude_pairs` fits. See the [release notes](https://github.com/FuZhiyu/OptimalGIV.jl/releases).
 
@@ -240,7 +240,7 @@ estimate and $M_t$ is the complete-coverage period multiplier.
 |---|---|---|---|---|
 | `:raw_onestep` | Fix $1/\operatorname{var}(uq_i)$ before solving | Equal | Exact quadratic | Sandwich with the same fixed weights (not eligible for the information formula) |
 | Custom vector | Fix the supplied entity weights before solving | Equal | Exact quadratic | Sandwich with the same fixed weights (not eligible for the information formula) |
-| `:twostep` (default) | Step 1 uses raw weights; step 2 fixes $1/\operatorname{var}(\widehat u_i(\widetilde{\zeta}))$ | Step 1 is equal; complete-coverage step 2 fixes $M_t(\widetilde{\zeta})$ | Two exact-quadratic solves | Information formula when eligible (converged, complete coverage, in-domain); sandwich with the frozen step-2 weights otherwise |
+| `:twostep` (default) | Step 1 uses raw weights; step 2 fixes $1/\operatorname{var}(\widehat u_i(\widetilde{\zeta}))$ | Step 1 is equal; complete-coverage step 2 fixes $M_t(\widetilde{\zeta})$ | Two exact-quadratic solves | Information formula when eligible (converged, complete coverage, in-domain); sandwich with the frozen weights of the reported solve otherwise |
 | `:cue` | Recompute residual-based weights at every candidate | Recompute $M_t$ at every candidate under complete coverage; none otherwise | Nonlinear | Information formula when eligible (converged, complete coverage, in-domain); sandwich otherwise (including incomplete coverage) |
 
 Feasible two-step GMM therefore has exactly two solves. Step 1 uses raw entity
