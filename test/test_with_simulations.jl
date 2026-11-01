@@ -42,7 +42,7 @@ function estimate_and_evaluate(df::DataFrame, formula; kwargs...)
     return evaluation_metrics(model, df)
 end
 
-function run_simulation_estimation(simparamstr::String, formula;
+function run_simulation_estimation(simparamstr::AbstractString, formula;
     Nsims=100,
     estimate_label="standard",
     verbose=false,
@@ -185,10 +185,11 @@ try
         # (ζ_bias≈0.034 vs 0.01, β_bias≈0.043 vs 0.02) and the two entries were held as
         # honest @test_broken. Under the required explicit incomplete-coverage regime,
         # step-2 reweighting improves them but does not clear the inherited tight bars;
-        # keep those failures visible rather than retuning the thresholds.
+        # keep those failures visible rather than retuning the thresholds. β coverage
+        # is live: correct OLS scaling on the unbalanced panel puts it inside the band.
         ("large panel", @formula(q + endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", [2.0], false,
             (bias_tol=0.01, β_bias_tol=0.02, coverage_range=(0.92, 0.98), min_success=nothing,
-             ζ_bias_broken=true, β_bias_broken=true, ζ_cov_broken=false, β_cov_broken=true)),
+             ζ_bias_broken=true, β_bias_broken=true, ζ_cov_broken=false, β_cov_broken=false)),
         # Concentrated dominant-sector fixture (excess-HHI 0.5 → top sector ~55%).
         # Not in any other standard fixture; this
         # is where SE calibration of the size-weighted aggregate elasticity is stressed.

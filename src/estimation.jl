@@ -955,6 +955,12 @@ end
 Solve the OLS covariance matrix for the GIV estimation.
 
 This version uses the observation indexing structure instead of matrices directly.
+Each entity's cross-product sums over its own observed periods, so with
+`Xᵢ'Xᵢ = Σₜ XᵢₜXᵢₜ'` the result is the finite-sample
+
+    (Σᵢ Xᵢ'Xᵢ)⁻¹ (Σᵢ σᵢ² Xᵢ'Xᵢ) (Σᵢ Xᵢ'Xᵢ)⁻¹,
+
+which gives `σᵢ²/nᵢ` for the intercept of an entity observed in `nᵢ` periods.
 
 Parameters:
 - σu²vec: Pre-computed entity-specific residual variances
@@ -980,7 +986,7 @@ function solve_ols_vcov(σu²vec, X, obs_index)
         for i in chunk_range
             # Collect X values for this entity
             X_i = zeros(0, Nmom)
-            n_obs = 0  # Count observations for normalization
+            n_obs = 0
 
             # Find all observations for entity i
             for t in 1:T
@@ -1014,7 +1020,7 @@ function solve_ols_vcov(σu²vec, X, obs_index)
 
             # Compute XX'_i matrix
             XX_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
-            BLAS.syrk!('U', 'T', 1.0 / n_obs, X_i_nonzero, 0.0, XX_i_sub)
+            BLAS.syrk!('U', 'T', 1.0, X_i_nonzero, 0.0, XX_i_sub)
 
             # Wrap with Symmetric to represent the full symmetric matrix
             XX_i_sub_sym = Symmetric(XX_i_sub, :U)
@@ -1058,7 +1064,7 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     # Compute the covariance matrix using Symmetric to exploit symmetry
     bread_sym = Symmetric(bread)
     bread_inv = inv(bread_sym)
-    vcov_ols = bread_inv * meat * bread_inv / T
+    vcov_ols = bread_inv * meat * bread_inv
 
     return vcov_ols
 end
