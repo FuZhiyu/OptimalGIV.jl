@@ -951,6 +951,13 @@ function solve_vcov(u, S, C, Cp, obs_index;
     return σu²vec, Symmetric(Σζ + Σζ') / 2
 end
 
+# Rank of a cross-product at unit diagonal, so regressor units cannot change the answer.
+function full_column_rank(XX)
+    d = sqrt.(diag(XX))
+    any(iszero, d) && return false
+    return cholesky(Symmetric(XX ./ (d * d')), RowMaximum(); check=false).rank == size(XX, 1)
+end
+
 """
 Solve the OLS covariance matrix for the GIV estimation.
 
@@ -961,8 +968,14 @@ Each entity's cross-product sums over its own observed periods. With
 
 which gives `σᵢ²/nᵢ` for the intercept of an entity observed in `nᵢ` periods.
 `kᵢ = tr((X'X)⁻¹ Xᵢ'Xᵢ)` is entity `i`'s leverage: the count of its fitted
-coefficients when it owns its columns, and its share of any pooled column. Effects
-absorbed by fixed-effect solvers are not counted.
+coefficients when it owns its columns, and its share of any pooled column.
+
+The correction is exact only without `fe()` terms. Effects absorbed by `fe()` are
+not counted, and `σu²vec` has already spent an absorbed intercept through `nᵢ - 1`,
+so the right divisor is about `nᵢ - 1 - kᵢ`. Under absorbed entity effects with
+pooled `X`, `kᵢ < 1` and the factor falls below one, understating the variance.
+
+Leverage has no meaning on a rank-deficient `X`, so that case keeps `σ̃ᵢ² = σᵢ²`.
 
 The degrees-of-freedom correction applies only here. `σu²vec` stays the `nᵢ - 1`
 variance that the estimating weights and the elasticity covariance use.
@@ -1063,14 +1076,20 @@ function solve_ols_vcov(σu²vec, X, obs_index)
 
     # Compute the covariance matrix using Symmetric to exploit symmetry
     bread_sym = Symmetric(bread)
+    correct_dof = full_column_rank(bread)
     bread_inv = inv(bread_sym)
 
     # The leverage needs the full bread, so the meat follows it.
     for (i, n_obs, cols, XX_i) in entity_blocks
-        k_i = dot(view(bread_inv, cols, cols), XX_i)
-        n_obs - k_i > sqrt(eps()) || throw(ArgumentError(
-            "entity index $i has $n_obs observations and leverage $k_i, so its OLS variance has no degrees of freedom."))
-        meat[cols, cols] .+= XX_i .* (σu²vec[i] * (n_obs - 1) / (n_obs - k_i))
+        dof_factor = 1.0
+        if correct_dof
+            k_i = dot(view(bread_inv, cols, cols), XX_i)
+            n_obs - k_i > sqrt(eps()) || throw(ArgumentError(
+                "entity index $i is fitted exactly: its $n_obs observations carry leverage $k_i, " *
+                "so its residuals identify no OLS variance. Drop regressors or merge the entity."))
+            dof_factor = (n_obs - 1) / (n_obs - k_i)
+        end
+        meat[cols, cols] .+= XX_i .* (σu²vec[i] * dof_factor)
     end
     vcov_ols = bread_inv * meat * bread_inv
 

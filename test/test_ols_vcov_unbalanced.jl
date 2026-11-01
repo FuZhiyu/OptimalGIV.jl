@@ -1,6 +1,6 @@
 using Test, OptimalGIV, Random, LinearAlgebra, Statistics
-using OptimalGIV: calculate_entity_variance, create_observation_index, solve_ols_vcov,
-    solve_optimal_vcov
+using OptimalGIV: calculate_entity_variance, create_observation_index, full_column_rank,
+    solve_ols_vcov, solve_optimal_vcov
 using DataFrames, CategoricalArrays
 
 include("vcov_test_helpers.jl")   # _load_simdata1
@@ -91,6 +91,52 @@ end
     @test solve_ols_vcov(σu², X, obs_index) ≈
           _pre_fix_ols_vcov(σu² .* (T - 1) / (T - 4), X, obs_index) rtol = 1e-12
     @test solve_ols_vcov(σu², entity_dummies, obs_index) ≈ Diagonal(σu² ./ T) rtol = 1e-12
+end
+
+@testset "solve_ols_vcov: rank and exact-fit handling" begin
+    Random.seed!(20261104)
+    z = randn(60)
+    @test full_column_rank([60.0 sum(z); sum(z) dot(z, z)] .* 1e8)
+    collinear = [ones(60) z 1e6 .+ 3e6 .* z]
+    @test !full_column_rank(collinear' * collinear)
+    @test !full_column_rank(zeros(2, 2))
+    well_scaled = [ones(60) z 1e9 .* z .^ 2]
+    @test full_column_rank(well_scaled' * well_scaled)
+
+    # A rank-deficient X skips leverage: no error, whatever the rounding in the inverse.
+    # An exact-zero pivot still raises `SingularException`, as it did before the correction.
+    present = [1:30, 6:40, 11:24]
+    df, obs_index = _unbalanced_index(present, 40)
+    ids = Int.(levelcode.(df.id))
+    w = randn(length(ids))
+    X = reduce(hcat, [[ids .== i, (ids .== i) .* w, (ids .== i) .* (0.1 .+ 0.3 .* w)][j]
+                      for i in 1:3 for j in 1:3])
+    X = Float64.(X)
+    σu² = [0.5, 1.0, 2.0]
+    @test !full_column_rank(X'X)
+    try
+        @test size(solve_ols_vcov(σu², X, obs_index)) == (9, 9)
+    catch err
+        @test err isa LinearAlgebra.SingularException
+    end
+
+    # Full rank with an entity spanned by its own columns: the error names that cause.
+    present = [1:20, 1:3]
+    df, obs_index = _unbalanced_index(present, 20)
+    ids = Int.(levelcode.(df.id))
+    exact = Float64.([ids .== 1 ids .== 2 (ids .== 2) .* df.t (ids .== 2) .* df.t .^ 2])
+    @test full_column_rank(exact'exact)
+    @test_throws "fitted exactly" solve_ols_vcov([1.0, 1.0], exact, obs_index)
+end
+
+@testset "giv: a collinear X keeps its point estimates" begin
+    df = _load_simdata1()
+    df.z = df.η1 .+ 0.25
+    df.y = 3.0 .* df.z .- 2.0
+    fit(f) = giv(df, f, :id, :t, :absS; guess=fill(1.0, 5), quiet=true, complete_coverage=true)
+    m = fit(@formula(q + id & endog(p) ~ 0 + id + id & z + id & y))
+    @test m.converged
+    @test endog_coef(m) ≈ endog_coef(fit(@formula(q + id & endog(p) ~ 0 + id + id & z))) rtol = 1e-6
 end
 
 @testset "the degrees-of-freedom correction leaves estimation alone" begin
