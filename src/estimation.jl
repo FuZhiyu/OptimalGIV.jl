@@ -954,16 +954,21 @@ end
 """
 Solve the OLS covariance matrix for the GIV estimation.
 
-This version uses the observation indexing structure instead of matrices directly.
-Each entity's cross-product sums over its own observed periods, so with
+Each entity's cross-product sums over its own observed periods. With
 `Xᵢ'Xᵢ = Σₜ XᵢₜXᵢₜ'` the result is the finite-sample
 
-    (Σᵢ Xᵢ'Xᵢ)⁻¹ (Σᵢ σᵢ² Xᵢ'Xᵢ) (Σᵢ Xᵢ'Xᵢ)⁻¹,
+    (Σᵢ Xᵢ'Xᵢ)⁻¹ (Σᵢ σ̃ᵢ² Xᵢ'Xᵢ) (Σᵢ Xᵢ'Xᵢ)⁻¹,    σ̃ᵢ² = σᵢ² (nᵢ - 1) / (nᵢ - kᵢ),
 
 which gives `σᵢ²/nᵢ` for the intercept of an entity observed in `nᵢ` periods.
+`kᵢ = tr((X'X)⁻¹ Xᵢ'Xᵢ)` is entity `i`'s leverage: the count of its fitted
+coefficients when it owns its columns, and its share of any pooled column. Effects
+absorbed by fixed-effect solvers are not counted.
+
+The degrees-of-freedom correction applies only here. `σu²vec` stays the `nᵢ - 1`
+variance that the estimating weights and the elasticity covariance use.
 
 Parameters:
-- σu²vec: Pre-computed entity-specific residual variances
+- σu²vec: Pre-computed entity-specific residual variances, divided by `nᵢ - 1`
 - X: Matrix of exogenous variables
 - obs_index: Observation index structure with entity mappings
 
@@ -979,9 +984,9 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     meat = zeros(Nmom, Nmom)
 
     # Process a chunk of entities
-    function process_chunk(chunk_range)::Tuple{Matrix{Float64},Matrix{Float64}}
+    function process_chunk(chunk_range)
         local_bread = zeros(Nmom, Nmom)
-        local_meat = zeros(Nmom, Nmom)
+        local_blocks = Tuple{Int,Int,Vector{Int},Matrix{Float64}}[]
 
         for i in chunk_range
             # Collect X values for this entity
@@ -1021,20 +1026,14 @@ function solve_ols_vcov(σu²vec, X, obs_index)
             # Compute XX'_i matrix
             XX_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
             BLAS.syrk!('U', 'T', 1.0, X_i_nonzero, 0.0, XX_i_sub)
-
-            # Wrap with Symmetric to represent the full symmetric matrix
-            XX_i_sub_sym = Symmetric(XX_i_sub, :U)
-
-            # Map back to original dimensions
-            full_XX_i = zeros(Nmom, Nmom)
-            full_XX_i[nonzero_cols, nonzero_cols] .= XX_i_sub_sym
+            XX_i_sub = Matrix(Symmetric(XX_i_sub, :U))
 
             # Update local accumulators
-            local_bread .+= full_XX_i
-            local_meat .+= full_XX_i .* σu²vec[i]
+            local_bread[nonzero_cols, nonzero_cols] .+= XX_i_sub
+            push!(local_blocks, (i, n_obs, nonzero_cols, XX_i_sub))
         end
 
-        return local_bread, local_meat
+        return local_bread, local_blocks
     end
 
     # Create smaller chunks for better load balancing
@@ -1055,15 +1054,24 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     end
 
     # Collect results from all tasks
+    entity_blocks = Tuple{Int,Int,Vector{Int},Matrix{Float64}}[]
     for task in tasks
-        thread_bread, thread_meat = fetch(task)::Tuple{Matrix{Float64},Matrix{Float64}}
+        thread_bread, thread_blocks = fetch(task)
         bread .+= thread_bread
-        meat .+= thread_meat
+        append!(entity_blocks, thread_blocks)
     end
 
     # Compute the covariance matrix using Symmetric to exploit symmetry
     bread_sym = Symmetric(bread)
     bread_inv = inv(bread_sym)
+
+    # The leverage needs the full bread, so the meat follows it.
+    for (i, n_obs, cols, XX_i) in entity_blocks
+        k_i = dot(view(bread_inv, cols, cols), XX_i)
+        n_obs - k_i > sqrt(eps()) || throw(ArgumentError(
+            "entity index $i has $n_obs observations and leverage $k_i, so its OLS variance has no degrees of freedom."))
+        meat[cols, cols] .+= XX_i .* (σu²vec[i] * (n_obs - 1) / (n_obs - k_i))
+    end
     vcov_ols = bread_inv * meat * bread_inv
 
     return vcov_ols

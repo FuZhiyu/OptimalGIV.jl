@@ -1,6 +1,9 @@
 using Test, OptimalGIV, Random, LinearAlgebra, Statistics
-using OptimalGIV: create_observation_index, solve_ols_vcov, solve_optimal_vcov
+using OptimalGIV: calculate_entity_variance, create_observation_index, solve_ols_vcov,
+    solve_optimal_vcov
 using DataFrames, CategoricalArrays
+
+include("vcov_test_helpers.jl")   # _load_simdata1
 
 # Panel sorted by (t, id); `present[i]` lists the periods entity i is observed.
 function _unbalanced_index(present, T)
@@ -42,15 +45,40 @@ end
     regime_columns = [entity_dummies .* .!post entity_dummies .* post]
     occupied = vec(any(!iszero, regime_columns; dims=1))
     nᵢᵣ = vec(sum(regime_columns; dims=1))[occupied]
+    kᵢ = [count(occupied[[i, i + 4]]) for i in 1:4]   # one or two fitted intercepts
+    σ̃² = σu² .* (n .- 1) ./ (n .- kᵢ)
     @test diag(solve_ols_vcov(σu², regime_columns[:, occupied], obs_index)) ≈
-          repeat(σu², 2)[occupied] ./ nᵢᵣ rtol = 1e-12
+          repeat(σ̃², 2)[occupied] ./ nᵢᵣ rtol = 1e-12
 
-    # One pooled intercept: the variance of the mean of all rows.
+    # One pooled intercept: each entity's leverage is its share of the rows.
     pooled = ones(length(ids), 1)
-    @test only(solve_ols_vcov(σu², pooled, obs_index)) ≈ sum(n .* σu²) / sum(n)^2 rtol = 1e-12
+    σ̃²_pooled = σu² .* (n .- 1) ./ (n .- n ./ sum(n))
+    @test only(solve_ols_vcov(σu², pooled, obs_index)) ≈ sum(n .* σ̃²_pooled) / sum(n)^2 rtol = 1e-12
 end
 
-@testset "solve_ols_vcov: balanced panels reproduce the common-T formula" begin
+@testset "solve_ols_vcov: nᵢ - kᵢ matches entity-by-entity OLS" begin
+    # With entity-owned columns, the pooled sandwich is each entity's textbook
+    # s²(Xᵢ'Xᵢ)⁻¹, where s² = RSSᵢ/(nᵢ - kᵢ) and σu²vec carries RSSᵢ/(nᵢ - 1).
+    Random.seed!(20261103)
+    present = [1:30, 6:40, 11:24]
+    df, obs_index = _unbalanced_index(present, 40)
+    ids = Int.(levelcode.(df.id))
+    time = df.t ./ 40
+    X = reduce(hcat, [[ids .== i, (ids .== i) .* time, (ids .== i) .* time .^ 2][j] for i in 1:3 for j in 1:3])
+    X = Float64.(X)
+    y = randn(length(ids))
+    u = y - X * (X \ y)
+    n = length.(present)
+    RSS = [sum(abs2, u[ids.==i]) for i in 1:3]
+    textbook = zeros(9, 9)
+    for i in 1:3
+        cols = (3i-2):3i
+        textbook[cols, cols] = RSS[i] / (n[i] - 3) * inv(X[ids.==i, cols]' * X[ids.==i, cols])
+    end
+    @test solve_ols_vcov(calculate_entity_variance(u, obs_index), X, obs_index) ≈ textbook rtol = 1e-10
+end
+
+@testset "solve_ols_vcov: balanced panels match common-T up to the dof factor" begin
     Random.seed!(20261031)
     N, T = 4, 24
     df, obs_index = _unbalanced_index(fill(1:T, N), T)
@@ -60,8 +88,40 @@ end
     post = df.t .> T ÷ 2
     entity_dummies = [Float64(ids[r] == i) for r in eachindex(ids), i in 1:N]
     X = hcat([(ids .== i) .* w for i in 1:N, w in (.!post, post, η .* .!post, η .* post)]...)
-    @test solve_ols_vcov(σu², X, obs_index) ≈ _pre_fix_ols_vcov(σu², X, obs_index) rtol = 1e-12
+    @test solve_ols_vcov(σu², X, obs_index) ≈
+          _pre_fix_ols_vcov(σu² .* (T - 1) / (T - 4), X, obs_index) rtol = 1e-12
     @test solve_ols_vcov(σu², entity_dummies, obs_index) ≈ Diagonal(σu² ./ T) rtol = 1e-12
+end
+
+@testset "the degrees-of-freedom correction leaves estimation alone" begin
+    df = _load_simdata1()
+    m = giv(df, @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), :id, :t, :absS;
+        guess=fill(1.0, 5), quiet=true, complete_coverage=true, save=:residuals)
+    # Pins from the package before `nᵢ - kᵢ` entered `solve_ols_vcov`.
+    @test endog_coef(m) ≈ [1.596360127433897, 1.6570008685549518, 1.2964302663478515,
+        3.334970057944897, 0.5844260185011083] rtol = 1e-12
+    @test exog_coef(m)[1:3] ≈ [0.34058483707463594, 0.3010093760396093,
+        -1.3124893472735888] rtol = 1e-12
+    ids = Int.(levelcode.(m.residual_df.id))
+    residuals = m.residual_df.q_residual
+    @test m.residual_variance ≈ [sum(abs2, residuals[ids.==i]) / (count(==(i), ids) - 1)
+                                 for i in 1:5] rtol = 1e-12
+end
+
+@testset "giv: absorbed effects reach the OLS covariance through X_feres" begin
+    df = _load_simdata1()
+    m = giv(df, @formula(q + id & endog(p) ~ fe(id) + η1 + η2), :id, :t, :absS;
+        guess=fill(1.0, 5), quiet=true, complete_coverage=true)
+    ids = Int.(levelcode.(df.id))
+    within(x) = x .- [mean(x[ids.==i]) for i in ids]
+    X = hcat(within(df.η1), within(df.η2))
+    Cp = reduce(hcat, [within(df.p .* (ids .== i)) for i in 1:5])
+    XX = X'X
+    k = [tr(XX \ (X[ids.==i, :]' * X[ids.==i, :])) for i in 1:5]
+    T = length(unique(df.t))
+    meat = sum(m.residual_variance[i] * (T - 1) / (T - k[i]) * X[ids.==i, :]' * X[ids.==i, :] for i in 1:5)
+    β_Cp = X \ Cp
+    @test exog_vcov(m) ≈ XX \ meat / XX + β_Cp * endog_vcov(m) * β_Cp' rtol = 1e-6
 end
 
 @testset "information formula matches the closed form of Theorem 1" begin
