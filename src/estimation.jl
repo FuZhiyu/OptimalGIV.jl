@@ -951,13 +951,48 @@ function solve_vcov(u, S, C, Cp, obs_index;
     return σu²vec, Symmetric(Σζ + Σζ') / 2
 end
 
+# Entity index, observation count, nonzero columns, and X'X on those columns.
+const OLSEntityBlock = Tuple{Int,Int,Vector{Int},Matrix{Float64}}
+
+# Rank of a cross-product at unit diagonal, so regressor units cannot change the answer.
+# The tolerance matters: the last pivot of a singular matrix is rounding noise of either
+# sign, so a tolerance of zero often calls a collinear design full rank.
+function full_column_rank(XX)
+    d = sqrt.(diag(XX))
+    any(iszero, d) && return false
+    return cholesky(Symmetric(XX ./ (d * d')), RowMaximum(); check=false, tol=1e-13).rank == size(XX, 1)
+end
+
 """
 Solve the OLS covariance matrix for the GIV estimation.
 
-This version uses the observation indexing structure instead of matrices directly.
+Each entity's cross-product sums over its own observed periods. With
+`Xᵢ'Xᵢ = Σₜ XᵢₜXᵢₜ'` the result is the finite-sample
+
+    (Σᵢ Xᵢ'Xᵢ)⁻¹ (Σᵢ σ̃ᵢ² Xᵢ'Xᵢ) (Σᵢ Xᵢ'Xᵢ)⁻¹,    σ̃ᵢ² = σᵢ² (nᵢ - 1) / (nᵢ - kᵢ),
+
+which gives `σᵢ²/nᵢ` for the intercept of an entity observed in `nᵢ` periods.
+`kᵢ = tr((X'X)⁻¹ Xᵢ'Xᵢ)` is entity `i`'s leverage: the count of its fitted
+coefficients when it owns its columns, and its share of any pooled column.
+
+Given `ζ`, the correction is unbiased for entity-owned columns and for pooled columns
+under a common variance; with pooled columns and heteroskedastic entities it is
+approximate, and the estimation of `ζ` is not counted.
+Effects absorbed by `fe()` are not counted, and `σu²vec` has already spent an absorbed
+intercept through `nᵢ - 1`, so the right divisor is about `nᵢ - 1 - kᵢ`. Under absorbed
+entity effects with pooled `X`, `kᵢ < 1` and the factor falls below one, understating
+the variance.
+
+Leverage has no meaning on a numerically rank-deficient `X`, and an exactly fitted
+entity (`nᵢ = kᵢ`) has no residual degrees of freedom, so both cases keep
+`σ̃ᵢ² = σᵢ²`. The rank check covers all of `X`, so one such block keeps `σᵢ²` for
+every entity.
+
+The degrees-of-freedom correction applies only here. `σu²vec` stays the `nᵢ - 1`
+variance that the estimating weights and the elasticity covariance use.
 
 Parameters:
-- σu²vec: Pre-computed entity-specific residual variances
+- σu²vec: Pre-computed entity-specific residual variances, divided by `nᵢ - 1`
 - X: Matrix of exogenous variables
 - obs_index: Observation index structure with entity mappings
 
@@ -973,14 +1008,14 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     meat = zeros(Nmom, Nmom)
 
     # Process a chunk of entities
-    function process_chunk(chunk_range)::Tuple{Matrix{Float64},Matrix{Float64}}
+    function process_chunk(chunk_range)::Tuple{Matrix{Float64},Vector{OLSEntityBlock}}
         local_bread = zeros(Nmom, Nmom)
-        local_meat = zeros(Nmom, Nmom)
+        local_blocks = OLSEntityBlock[]
 
         for i in chunk_range
             # Collect X values for this entity
             X_i = zeros(0, Nmom)
-            n_obs = 0  # Count observations for normalization
+            n_obs = 0
 
             # Find all observations for entity i
             for t in 1:T
@@ -1014,21 +1049,15 @@ function solve_ols_vcov(σu²vec, X, obs_index)
 
             # Compute XX'_i matrix
             XX_i_sub = zeros(length(nonzero_cols), length(nonzero_cols))
-            BLAS.syrk!('U', 'T', 1.0 / n_obs, X_i_nonzero, 0.0, XX_i_sub)
-
-            # Wrap with Symmetric to represent the full symmetric matrix
-            XX_i_sub_sym = Symmetric(XX_i_sub, :U)
-
-            # Map back to original dimensions
-            full_XX_i = zeros(Nmom, Nmom)
-            full_XX_i[nonzero_cols, nonzero_cols] .= XX_i_sub_sym
+            BLAS.syrk!('U', 'T', 1.0, X_i_nonzero, 0.0, XX_i_sub)
+            XX_i_sub = Matrix(Symmetric(XX_i_sub, :U))
 
             # Update local accumulators
-            local_bread .+= full_XX_i
-            local_meat .+= full_XX_i .* σu²vec[i]
+            local_bread[nonzero_cols, nonzero_cols] .+= XX_i_sub
+            push!(local_blocks, (i, n_obs, nonzero_cols, XX_i_sub))
         end
 
-        return local_bread, local_meat
+        return local_bread, local_blocks
     end
 
     # Create smaller chunks for better load balancing
@@ -1049,16 +1078,28 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     end
 
     # Collect results from all tasks
+    entity_blocks = OLSEntityBlock[]
     for task in tasks
-        thread_bread, thread_meat = fetch(task)::Tuple{Matrix{Float64},Matrix{Float64}}
+        thread_bread, thread_blocks = fetch(task)::Tuple{Matrix{Float64},Vector{OLSEntityBlock}}
         bread .+= thread_bread
-        meat .+= thread_meat
+        append!(entity_blocks, thread_blocks)
     end
 
     # Compute the covariance matrix using Symmetric to exploit symmetry
     bread_sym = Symmetric(bread)
+    correct_dof = full_column_rank(bread)
     bread_inv = inv(bread_sym)
-    vcov_ols = bread_inv * meat * bread_inv / T
+
+    # The leverage needs the full bread, so the meat follows it.
+    for (i, n_obs, cols, XX_i) in entity_blocks
+        dof_factor = 1.0
+        if correct_dof
+            k_i = dot(view(bread_inv, cols, cols), XX_i)
+            n_obs - k_i > sqrt(eps()) && (dof_factor = (n_obs - 1) / (n_obs - k_i))
+        end
+        meat[cols, cols] .+= XX_i .* (σu²vec[i] * dof_factor)
+    end
+    vcov_ols = bread_inv * meat * bread_inv
 
     return vcov_ols
 end

@@ -143,6 +143,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 - `:cue` recomputes every applicable weight at each candidate estimate
 - Without `pc(k)`, fixed-weight IV solves are exact quadratic systems under both coverage regimes
 - `vcov` selects the covariance route: `:auto` (default) reports the information-formula covariance for an eligible fit — converged, complete-coverage, in-domain `:twostep` or `:cue` — and the masked sandwich (exact frozen estimating weights, same non-excluded pairs) otherwise; `:sandwich` forces the sandwich on any supported route; `:optimal` requires the information formula and errors where its restrictions fail. `:raw_onestep` and custom-weight fits are never eligible for the information formula
+- The reported OLS term in `solve_ols_vcov` uses `nᵢ - kᵢ`; `σu²vec`, the estimating weights, `endog_vcov`, and `residual_variance` stay on `nᵢ - 1`, so point estimates do not move
 - The economic multiplier is `M_t = 1 / ζS_t` for positive aggregate elasticity. The absolute-value clamp is only a finite off-domain iteration rule; final complete-coverage roots must satisfy the positive-domain check
 
 #### Panel Data Handling
@@ -166,6 +167,7 @@ Tests are organized by functionality:
 - `test_algorithm_equivalence.jl`: Consistency across algorithms
 - `test_fixed_weight_mode.jl`: Weighting modes, two-step freezing, and API compatibility
 - `test_vcov_scope.jl`, `test_vcov_coincidence_fixtures.jl`: Covariance routing, exclusions, and known-answer covariance fixtures
+- `test_ols_vcov_unbalanced.jl`: OLS covariance on unbalanced panels, degrees of freedom, and rank handling
 - `test_analytic_jacobian.jl`: Analytic Jacobian against automatic differentiation
 - `test_nonfinite_guards.jl`: `NonfiniteMomentError` diagnosis
 - `test_twostep_mc_smoke.jl`: Cheap two-step routing and SE calibration tripwire
