@@ -161,7 +161,8 @@ try
     # Primary tested estimator is the package default :twostep (raw first pass,
     # then one re-solve with precisions 1/var(û₁ᵢ)). Thresholds are the SAME
     # bars the CUE reference had to clear — MC evidence shows two-step matches CUE's
-    # bias/SD/coverage — so they are inherited, not retuned. The now-redundant :cue
+    # bias/SD/coverage — so they are inherited, not retuned; β coverage instead uses
+    # the Monte Carlo band below. The now-redundant :cue
     # and :raw_onestep arms are dropped here: :cue/oracle are kept as explicit benchmark
     # arms below on two representative fixtures, and :raw_onestep stays covered by the fast
     # test_fixed_weight_mode.jl suite.
@@ -171,9 +172,8 @@ try
             (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80,
              ζ_bias_broken=false, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false)),
         # β coverage: the incomplete-coverage (sandwich-routed, vcov-change-agnostic)
-        # arm now lands inside the nominal band on the regenerated seed=1 fixtures at
-        # branch tip, so its previously-broken β-coverage flag is corrected to a live
-        # @test. The coverage band itself is unchanged (threshold-preserving).
+        # arm lands inside the nominal band on the regenerated seed=1 fixtures, so its
+        # β-coverage check is a live @test.
         ("10% missing", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing, false,
             (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80,
              ζ_bias_broken=true, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false)),

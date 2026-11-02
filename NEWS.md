@@ -9,7 +9,7 @@
 3. **Standard errors change for incomplete-coverage and `exclude_pairs` fits.** Incomplete coverage uses an empirical sandwich, which stays consistent when the variance model fails, and the covariance now drops excluded pairs to match the moments. No option restores the earlier values.
 4. **Roots with nonpositive or near-zero aggregate elasticity report `converged=false`** under complete coverage, so the numerical clamp cannot pass off a non-economic root.
 5. **Invalid combinations now error.** `exclude_pairs` with `:debiased_ols` or `:scalar_search` was silently ignored, and those algorithms ran on `complete_coverage=false` when `quiet=true`.
-6. **Standard errors of the exogenous coefficients change.** Each entity's OLS variance uses only the periods it is observed, which corrects an understatement by a factor of `n_i/T` on unbalanced panels. It also uses `n_i - k_i` degrees of freedom, with `k_i` the entity's leverage, which rescales balanced panels by `(n_i - 1)/(n_i - k_i)`. Effects absorbed by `fe()` are not counted in `k_i`. Point estimates, the elasticity covariance, and `residual_variance` do not change.
+6. **Standard errors of the exogenous coefficients change.** Each entity's OLS variance uses only the periods it is observed, which corrects the common-`T` scaling on unbalanced panels: an entity's own coefficients were understated by a factor of `n_i/T`, and pooled coefficients could move either way. It also uses `n_i - k_i` degrees of freedom, with `k_i` the entity's leverage, which rescales balanced panels by `(n_i - 1)/(n_i - k_i)`. Effects absorbed by `fe()` are not counted in `k_i`. Point estimates, the elasticity covariance, and `residual_variance` do not change.
 
 ### New
 

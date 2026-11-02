@@ -16,7 +16,7 @@ function _unbalanced_index(present, T)
 end
 
 # Every entity's X'X scaled by 1/nᵢ, then the sandwich divided by common T.
-function _pre_fix_ols_vcov(σu², X, obs_index)
+function _common_t_ols_vcov(σu², X, obs_index)
     bread, meat = zeros(size(X, 2), size(X, 2)), zeros(size(X, 2), size(X, 2))
     for i in 1:obs_index.N
         rows = filter(>(0), obs_index.entity_obs_indices[i, :])
@@ -38,7 +38,7 @@ end
     # Entity intercept: σᵢ²/nᵢ, not the σᵢ²/T of the common-T scaling.
     entity_dummies = [Float64(ids[r] == i) for r in eachindex(ids), i in 1:4]
     @test solve_ols_vcov(σu², entity_dummies, obs_index) ≈ Diagonal(σu² ./ n) rtol = 1e-12
-    @test diag(_pre_fix_ols_vcov(σu², entity_dummies, obs_index)) ≈ σu² ./ T rtol = 1e-12
+    @test diag(_common_t_ols_vcov(σu², entity_dummies, obs_index)) ≈ σu² ./ T rtol = 1e-12
 
     # Regime-split entity intercepts: σᵢ²/nᵢᵣ within each occupied regime.
     post = df.t .> 20
@@ -89,7 +89,7 @@ end
     entity_dummies = [Float64(ids[r] == i) for r in eachindex(ids), i in 1:N]
     X = hcat([(ids .== i) .* w for i in 1:N, w in (.!post, post, η .* .!post, η .* post)]...)
     @test solve_ols_vcov(σu², X, obs_index) ≈
-          _pre_fix_ols_vcov(σu² .* (T - 1) / (T - 4), X, obs_index) rtol = 1e-12
+          _common_t_ols_vcov(σu² .* (T - 1) / (T - 4), X, obs_index) rtol = 1e-12
     @test solve_ols_vcov(σu², entity_dummies, obs_index) ≈ Diagonal(σu² ./ T) rtol = 1e-12
 end
 
@@ -103,8 +103,19 @@ end
     well_scaled = [ones(60) z 1e9 .* z .^ 2]
     @test full_column_rank(well_scaled' * well_scaled)
 
+    # The last pivot of a collinear design is rounding noise of either sign, so one seed
+    # proves nothing about the tolerance.
+    misread = count(1:500) do seed
+        Random.seed!(seed)
+        w = randn(60)
+        design = [ones(60) w 1 .+ 2 .* w]
+        full_column_rank(design' * design)
+    end
+    @test misread == 0
+
     # A rank-deficient X skips leverage: no error, whatever the rounding in the inverse.
-    # An exact-zero pivot still raises `SingularException`, as it did before the correction.
+    # An exact-zero pivot raises `SingularException`.
+    Random.seed!(20261104)
     present = [1:30, 6:40, 11:24]
     df, obs_index = _unbalanced_index(present, 40)
     ids = Int.(levelcode.(df.id))
@@ -147,7 +158,7 @@ end
     df = _load_simdata1()
     m = giv(df, @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), :id, :t, :absS;
         guess=fill(1.0, 5), quiet=true, complete_coverage=true, save=:residuals)
-    # Pins from the package before `nᵢ - kᵢ` entered `solve_ols_vcov`.
+    # Pinned `nᵢ - 1` results: the correction in `solve_ols_vcov` must not move them.
     @test endog_coef(m) ≈ [1.596360127433897, 1.6570008685549518, 1.2964302663478515,
         3.334970057944897, 0.5844260185011083] rtol = 1e-12
     @test exog_coef(m)[1:3] ≈ [0.34058483707463594, 0.3010093760396093,
