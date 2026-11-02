@@ -114,11 +114,12 @@ end
     X = Float64.(X)
     σu² = [0.5, 1.0, 2.0]
     @test !full_column_rank(X'X)
-    try
-        @test size(solve_ols_vcov(σu², X, obs_index)) == (9, 9)
+    outcome = try
+        solve_ols_vcov(σu², X, obs_index)
     catch err
-        @test err isa LinearAlgebra.SingularException
+        err
     end
+    @test outcome isa LinearAlgebra.SingularException || size(outcome) == (9, 9)
 
     # Full rank with an entity spanned by its own columns: the error names that cause.
     present = [1:20, 1:3]
