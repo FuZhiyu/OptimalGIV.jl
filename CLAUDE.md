@@ -166,6 +166,7 @@ Tests are organized by functionality:
 - `test_algorithm_equivalence.jl`: Consistency across algorithms
 - `test_fixed_weight_mode.jl`: Weighting modes, two-step freezing, and API compatibility
 - `test_vcov_scope.jl`, `test_vcov_coincidence_fixtures.jl`: Covariance routing, exclusions, and known-answer covariance fixtures
+- `test_ols_vcov_unbalanced.jl`: OLS covariance on unbalanced panels, degrees of freedom, and rank handling
 - `test_analytic_jacobian.jl`: Analytic Jacobian against automatic differentiation
 - `test_nonfinite_guards.jl`: `NonfiniteMomentError` diagnosis
 - `test_twostep_mc_smoke.jl`: Cheap two-step routing and SE calibration tripwire

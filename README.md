@@ -15,7 +15,7 @@ For Python users, a Python wrapper can be found [here](https://github.com/FuZhiy
 > [!IMPORTANT]
 > v0.4.0 introduces a feasible two-step estimator, `precision_weights=:twostep`, and makes it the default for `:iv` and `:iv_twopass` in place of the continuous updating estimator of earlier versions (`:cue`), for solver stability. The moment conditions weight each entity by its precision, $1/\mathrm{var}(u_i)$, and, under complete coverage, each period by the multiplier $M_t=1/\zeta_{S,t}$. Both weights depend on the elasticities, and `:cue` recomputes them at every candidate. `:twostep` instead solves once with precisions from `q` residualized on the controls and equal period weights, recomputes both weights at that estimate, freezes them, and solves once more. Pass `precision_weights=:cue` to recover earlier point estimates.
 >
-> `complete_coverage` is now required, and standard errors change for incomplete-coverage and `exclude_pairs` fits. See the [release notes](NEWS.md).
+> `complete_coverage` is now required, and standard errors change for incomplete-coverage fits, `exclude_pairs` fits, and the exogenous coefficients. See the [release notes](NEWS.md).
 
 ### Model Specification
 
