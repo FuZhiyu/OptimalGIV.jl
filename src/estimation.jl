@@ -951,6 +951,9 @@ function solve_vcov(u, S, C, Cp, obs_index;
     return σu²vec, Symmetric(Σζ + Σζ') / 2
 end
 
+# Entity index, observation count, nonzero columns, and X'X on those columns.
+const OLSEntityBlock = Tuple{Int,Int,Vector{Int},Matrix{Float64}}
+
 # Rank of a cross-product at unit diagonal, so regressor units cannot change the answer.
 function full_column_rank(XX)
     d = sqrt.(diag(XX))
@@ -998,9 +1001,9 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     meat = zeros(Nmom, Nmom)
 
     # Process a chunk of entities
-    function process_chunk(chunk_range)
+    function process_chunk(chunk_range)::Tuple{Matrix{Float64},Vector{OLSEntityBlock}}
         local_bread = zeros(Nmom, Nmom)
-        local_blocks = Tuple{Int,Int,Vector{Int},Matrix{Float64}}[]
+        local_blocks = OLSEntityBlock[]
 
         for i in chunk_range
             # Collect X values for this entity
@@ -1068,9 +1071,9 @@ function solve_ols_vcov(σu²vec, X, obs_index)
     end
 
     # Collect results from all tasks
-    entity_blocks = Tuple{Int,Int,Vector{Int},Matrix{Float64}}[]
+    entity_blocks = OLSEntityBlock[]
     for task in tasks
-        thread_bread, thread_blocks = fetch(task)
+        thread_bread, thread_blocks = fetch(task)::Tuple{Matrix{Float64},Vector{OLSEntityBlock}}
         bread .+= thread_bread
         append!(entity_blocks, thread_blocks)
     end

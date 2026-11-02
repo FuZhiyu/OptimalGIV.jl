@@ -248,8 +248,8 @@ try
                 @test ζ_coverage_ok
             end
             if !isnothing(test_params.β_bias_tol)
-                # Three Monte Carlo standard errors around nominal coverage at 400 draws:
-                # a two-sided band of 0.95 ± 0.033, replacing the scenario's ±0.025.
+                # Three Monte Carlo standard errors around nominal coverage at 400 draws
+                # (0.95 ± 0.033): a narrower band is too tight to judge one scenario.
                 β_coverage_ok = abs(performance.β_covered[1] - 0.95) <= 3 * sqrt(0.95 * 0.05 / 400)
                 if test_params.β_cov_broken
                     @test_broken β_coverage_ok
