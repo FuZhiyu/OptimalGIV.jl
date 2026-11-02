@@ -121,13 +121,16 @@ end
     end
     @test outcome isa LinearAlgebra.SingularException || size(outcome) == (9, 9)
 
-    # Full rank with an entity spanned by its own columns: the error names that cause.
+    # Full rank with an entity spanned by its own columns: that entity keeps σᵢ².
     present = [1:20, 1:3]
     df, obs_index = _unbalanced_index(present, 20)
     ids = Int.(levelcode.(df.id))
     exact = Float64.([ids .== 1 ids .== 2 (ids .== 2) .* df.t (ids .== 2) .* df.t .^ 2])
     @test full_column_rank(exact'exact)
-    @test_throws "fitted exactly" solve_ols_vcov([1.0, 1.0], exact, obs_index)
+    expected = zeros(4, 4)
+    expected[1, 1] = 0.5 / 20   # entity 1: n = 20, k = 1, so the factor is one
+    expected[2:4, 2:4] = 2.0 * inv(exact[ids.==2, 2:4]' * exact[ids.==2, 2:4])
+    @test solve_ols_vcov([0.5, 2.0], exact, obs_index) ≈ expected rtol = 1e-8
 end
 
 @testset "giv: a collinear X keeps its point estimates" begin
@@ -171,8 +174,8 @@ end
     @test exog_vcov(m) ≈ XX \ meat / XX + β_Cp * endog_vcov(m) * β_Cp' rtol = 1e-6
 end
 
-@testset "information formula matches the closed form of Theorem 1" begin
-    # Constant sizes with one elasticity per entity (eq:asymptotic_variance_zeta).
+@testset "information formula matches its closed form" begin
+    # Constant sizes with one elasticity per entity.
     Random.seed!(20261101)
     N, T = 4, 30
     df, obs_index = _unbalanced_index(fill(1:T, N), T)
@@ -207,8 +210,8 @@ end
         guess=ones(N), quiet=true, complete_coverage=true, save=:residuals)
     @test m.vcov_method === :optimal
 
-    # eq:beta_variance by hand: the first-step slope of p Cᵢ on entity i's intercept
-    # is i's own mean price, and entity variances come from the saved residuals.
+    # Var(β̂ᵢ) = σᵢ²/nᵢ + p̄ᵢ² Var(ζ̂ᵢ) by hand: the first-step slope of p Cᵢ on entity i's
+    # intercept is i's own mean price, and entity variances come from the saved residuals.
     residuals = m.residual_df.q_residual
     ids = Int.(levelcode.(m.residual_df.id))
     n = [count(==(i), ids) for i in 1:N]

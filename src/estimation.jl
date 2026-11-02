@@ -975,7 +975,8 @@ not counted, and `σu²vec` has already spent an absorbed intercept through `n�
 so the right divisor is about `nᵢ - 1 - kᵢ`. Under absorbed entity effects with
 pooled `X`, `kᵢ < 1` and the factor falls below one, understating the variance.
 
-Leverage has no meaning on a rank-deficient `X`, so that case keeps `σ̃ᵢ² = σᵢ²`.
+Leverage has no meaning on a rank-deficient `X`, and an exactly fitted entity
+(`nᵢ = kᵢ`) has no residual degrees of freedom, so both cases keep `σ̃ᵢ² = σᵢ²`.
 
 The degrees-of-freedom correction applies only here. `σu²vec` stays the `nᵢ - 1`
 variance that the estimating weights and the elasticity covariance use.
@@ -1084,10 +1085,7 @@ function solve_ols_vcov(σu²vec, X, obs_index)
         dof_factor = 1.0
         if correct_dof
             k_i = dot(view(bread_inv, cols, cols), XX_i)
-            n_obs - k_i > sqrt(eps()) || throw(ArgumentError(
-                "entity index $i is fitted exactly: its $n_obs observations carry leverage $k_i, " *
-                "so its residuals identify no OLS variance. Drop regressors or merge the entity."))
-            dof_factor = (n_obs - 1) / (n_obs - k_i)
+            n_obs - k_i > sqrt(eps()) && (dof_factor = (n_obs - 1) / (n_obs - k_i))
         end
         meat[cols, cols] .+= XX_i .* (σu²vec[i] * dof_factor)
     end
