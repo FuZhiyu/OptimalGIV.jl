@@ -62,7 +62,7 @@ const SIMULATION_SCENARIOS = [
         params=(N=100, T=1000, K=2, ushare=0.5, σζ=0.0, missingperc=0.9),
         nsims=400),
 
-    # Concentrated dominant-sector panel (Treasury-like size concentration).
+    # Concentrated dominant-sector panel.
     # h=0.5 gives excess-HHI 0.5: the largest sector holds ~55% of total size,
     # #2 ~17%, tail near zero — the regime where SE calibration is stressed and
     # CUE self-weighting is fragile. Not present in any other standard fixture.

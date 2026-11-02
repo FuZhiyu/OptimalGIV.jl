@@ -8,7 +8,6 @@ include("vcov_test_helpers.jl")   # _load_simdata1, _FEQ, _timevarying_complete_
 
 # ---------------------------------------------------------------------------
 # Analytic Jacobian of the fixed-precision moment kernel
-# (giv-solver-stability/analytic-jacobian)
 #
 # With fixed precisions the residuals u = uq + uCp ζ are linear in ζ, so the
 # Jacobian of the :iv/:iv_twopass moment map is exact in closed form (same O(N)

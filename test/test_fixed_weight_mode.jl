@@ -9,7 +9,7 @@ include("vcov_test_helpers.jl")   # _load_simdata1, _FEQ, _timevarying_complete_
 # ---------------------------------------------------------------------------
 # Fixed raw/user precision weighting
 #
-# Central claim (from giv-solver-stability/fixed-weight-mode): freezing the entity
+# Central claim: freezing the entity
 # precisions makes the moment map an EXACT fixed quadratic in ζ under incomplete
 # coverage (no period Mweights), removing the CUE self-weighting instability.
 # ---------------------------------------------------------------------------
@@ -274,7 +274,7 @@ end
 # step 2 freezes period_mweights constructed at the step-1 root and carries the
 # same vector into its moments, Jacobian, and (under `vcov = :sandwich`) its
 # masked empirical sandwich. The default `vcov = :auto` route reports the
-# information formula (umbrella decisions 8, 13), so the frozen-sandwich equality
+# information formula, so the frozen-sandwich equality
 # below is asserted against an explicit `vcov = :sandwich` fit.
 # ---------------------------------------------------------------------------
 
@@ -365,7 +365,7 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Two-step default (precision_weights = :twostep; giv-solver-stability/twostep-default)
+# Two-step default (precision_weights = :twostep)
 #
 # The package default estimator is now the two-step efficient GMM: step 1 solves
 # with :raw_onestep weights, step 2 re-solves once with precisions 1/var(û₁ᵢ) from the

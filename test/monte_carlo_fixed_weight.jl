@@ -118,8 +118,7 @@ end
 # entities at opposite size extremes ((1,10),(2,9),...). With per-entity
 # elasticities the system is one-moment-per-entity exactly identified and every
 # precision weighting shares the same roots (verified: CUE ≡ proxy ≡ oracle to
-# solver tolerance), so weighting can only matter when moments pool entities —
-# exactly the Treasury setting (9–13 category elasticities over 57 sectors).
+# solver tolerance), so weighting can only matter when moments pool entities.
 # Extreme-size pairing maximizes within-moment precision heterogeneity, the
 # channel proxy weights can get wrong. True category ζ = S-weighted mean of the
 # anti-aligned entity draws within the pair, recentred so S'ζ = 1/M; q is rebuilt

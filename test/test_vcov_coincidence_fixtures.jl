@@ -1,6 +1,5 @@
 # ---------------------------------------------------------------------------
 # Deterministic algebra fixtures for the masked covariance routes
-# (giv-solver-stability/estimator-scope-cleanup/simulation-validation).
 #
 # Three seed-free, hand-constructed fixtures that pin the covariance code to a
 # known answer and catch the two superseded-code bugs the branch retired:
@@ -19,7 +18,7 @@
 #      G = mean_t Wₜ'Dₜ is materially non-symmetric (heterogeneous loadings and
 #      sizes across coefficients). The correct sandwich G⁻¹BG⁻ᵀ coincides with
 #      the optimal formula; the transposed bread G⁻ᵀBG⁻¹ (the superseded
-#      `solve_specialized_vcov` orientation, umbrella decision 14) deviates by
+#      `solve_specialized_vcov` orientation) deviates by
 #      several hundred percent. A coincidence assertion at rtol 1e-8 therefore
 #      *fails* under the transposition — verified explicitly below.
 #

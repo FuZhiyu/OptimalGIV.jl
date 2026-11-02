@@ -168,7 +168,7 @@ end
     @test endog_coef(scalar)[1] * 2 ≈ 2.5341730 atol=1e-4
     @test stderror(scalar)[1] * 2 ≈ 0.2407 atol=1e-4
 
-    # Decision 14: both full-market estimators report the information formula.
+    # Both full-market estimators report the information formula.
     @test scalar.vcov_method == :optimal
     @test debiased.vcov_method == :optimal
     _, deb_mats = build_error_function(df, formula, :id, :t, :absS;
@@ -178,7 +178,7 @@ end
         deb_mats.C, deb_mats.obs_index)
     @test vcov(debiased) == deb_ref
 
-    # Decision 14: fixed-weight modes are rejected for :debiased_ols, an omitted
+    # Fixed-weight modes are rejected for :debiased_ols, an omitted
     # keyword resolves to its only supported mode, and it has no pairwise sandwich.
     for pw in (:raw_onestep, :twostep, ones(5))
         @test_throws ArgumentError giv(df, formula, :id, :t, :absS; guess=[1.0],
@@ -299,7 +299,6 @@ end
 
 # ---------------------------------------------------------------------------
 # `vcov` selector keyword, input validation, NaN-vcov return, recorded fields
-# (giv-solver-stability/vcov-selector-hardening; umbrella decisions 13, 14, 16)
 # ---------------------------------------------------------------------------
 
 @testset "vcov selector: eligibility cells and :sandwich frozen-bundle equality" begin

@@ -4,9 +4,9 @@ using OptimalGIV: build_error_function, diagnose_nonfinite_moment, NonfiniteMome
 using DataFrames, CSV, CategoricalArrays
 
 # ---------------------------------------------------------------------------
-# Nonfinite-moment guard (giv-solver-stability/nonfinite-forensics)
+# Nonfinite-moment guard
 #
-# The pre-2000 long-sample Treasury split failed with NLsolve's opaque
+# A panel with zero-size entities failed with NLsolve's opaque
 # IsFiniteException ("equation(s) … non-finite: [1..9]") because three zero-size
 # entities produced a 0/0 flow, whose NaN poisoned the shared OLS-FE
 # residualization so every entity's residual — and every moment — went NaN.
@@ -90,7 +90,7 @@ end
 
 @testset "guard: degenerate custom precision rejected at input validation" begin
     # A non-finite entity precision (e.g. near-zero residual variance ⇒ 1/σ² = Inf)
-    # would poison the shared moment normalization. Since decision 16, a custom
+    # would poison the shared moment normalization. A custom
     # `precision_weights` vector is validated up front: any non-finite or
     # non-positive entry is rejected with an `ArgumentError` before the solve,
     # rather than surfacing later as a NonfiniteMomentError.

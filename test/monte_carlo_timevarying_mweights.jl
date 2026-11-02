@@ -13,7 +13,7 @@
 #   specified group coefficients. Entity shocks are independent Gaussian with
 #   fixed heterogeneous standard deviations.
 #
-# PRIMARY TARGET (routing revision 2026-07-23, umbrella decisions 8/13): the
+# PRIMARY TARGET (routing revision 2026-07-23): the
 # complete-coverage two-step estimator now reports the model-implied information
 # formula (`vcov = :auto`), so the SE-calibration and coverage bands below are
 # pre-registered against the INFORMATION-FORMULA two-step SE. The masked empirical

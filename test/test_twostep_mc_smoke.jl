@@ -5,7 +5,6 @@ using DataFrames, CategoricalArrays
 
 # ---------------------------------------------------------------------------
 # Cheap smoke tier of the complete-coverage two-step Monte Carlo
-# (giv-solver-stability/suite-and-evidence-repair, umbrella decision 16).
 #
 # The full statistical acceptance bands live in the manual scripts
 # test/monte_carlo_timevarying_mweights.jl and test/monte_carlo_fixed_weight.jl

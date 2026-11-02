@@ -49,17 +49,20 @@ routing change), so **re-run them and refresh their recorded CSVs whenever you
 touch estimator weights, the covariance route, the analytic Jacobian, or the
 `vcov` selector** — and commit the refreshed CSV in the same change:
 
-| Script | Refreshes | Run (from the monorepo root env, so the test-only deps resolve) |
+| Script | Refreshes | Run (from the package root, with the test-only deps available at their `Project.toml` compat) |
 |---|---|---|
-| `test/monte_carlo_timevarying_mweights.jl` | `simresults/timevarying_mweights_performance.csv` | `julia --project=. GIV.jl/test/monte_carlo_timevarying_mweights.jl` |
-| `test/test_with_simulations.jl` | `simresults/simulation_performance.csv` (+ the per-replication diagnostics to research `output/`) | `julia --project=. -e 'include("GIV.jl/test/test_with_simulations.jl")'` |
-| `test/monte_carlo_fixed_weight.jl` | stdout report (efficiency/stability, no committed CSV) | `julia --project=. GIV.jl/test/monte_carlo_fixed_weight.jl` |
+| `test/monte_carlo_timevarying_mweights.jl` | `simresults/timevarying_mweights_performance.csv` | `julia --project=. test/monte_carlo_timevarying_mweights.jl` |
+| `test/test_with_simulations.jl` | `simresults/simulation_performance.csv` (+ the per-replication diagnostics when `GIV_DIAGNOSTICS_DIR` is set) | `julia --project=. -e 'include("test/test_with_simulations.jl")'` |
+| `test/monte_carlo_fixed_weight.jl` | stdout report (efficiency/stability, no committed CSV) | `julia --project=. test/monte_carlo_fixed_weight.jl` |
 
 Pre-registered acceptance bands are fixed in the script header BEFORE the run; a
 failed band is escalated as a finding, never retuned. The per-replication
-`simulation_benchmark_diagnostics.csv` is written to research `output/` (default
-`output/EstimateTreasuryDemandwithGIV/treasury-stability/simresults/`, override
-with `GIV_DIAGNOSTICS_DIR`), NOT into this package repo.
+`simulation_benchmark_diagnostics.csv` is written only to `GIV_DIAGNOSTICS_DIR`,
+NOT into this package repo.
+
+`simulations/` is git-ignored and reused as found. Delete it before rerunning
+`test_with_simulations.jl`: the recorded CSV comes from freshly generated seed-1
+fixtures, and older local fixtures give different numbers.
 
 `Pkg.test` carries a cheap `test/test_twostep_mc_smoke.jl` tier that guards the
 two-step **routing** (`:auto`→information formula, `:sandwich`→frozen bundle) and
@@ -178,6 +181,4 @@ Tests are organized by functionality:
    coefficient at zero is exactly column subsetting of the loading matrix, so it
    is implemented caller-side: build the reduced loading columns, fit, then
    re-expand the coefficient/covariance to the full shape with exact zeros on the
-   pinned row/column. The Treasury monorepo's `giv_pinned` wrapper
-   (`Code/EstimateTreasuryDemandwithGIV/estimates_io_helpers.jl` in that repo) is
-   the reference implementation of this pattern
+   pinned row/column

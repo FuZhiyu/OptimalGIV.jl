@@ -160,8 +160,7 @@ try
 @testset "Standard Model Specifications" begin
     # Primary tested estimator is the package default :twostep (raw first pass,
     # then one re-solve with precisions 1/var(û₁ᵢ)). Thresholds are the SAME
-    # bars the CUE reference had to clear — MC evidence (giv-solver-stability/
-    # twostep-default, cue-favorable-efficiency-mc) shows two-step matches CUE's
+    # bars the CUE reference had to clear — MC evidence shows two-step matches CUE's
     # bias/SD/coverage — so they are inherited, not retuned. The now-redundant :cue
     # and :raw_onestep arms are dropped here: :cue/oracle are kept as explicit benchmark
     # arms below on two representative fixtures, and :raw_onestep stays covered by the fast
@@ -190,8 +189,8 @@ try
         ("large panel", @formula(q + endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", [2.0], false,
             (bias_tol=0.01, β_bias_tol=0.02, coverage_range=(0.92, 0.98), min_success=nothing,
              ζ_bias_broken=true, β_bias_broken=true, ζ_cov_broken=false, β_cov_broken=true)),
-        # Concentrated dominant-sector fixture (Treasury-like size concentration,
-        # excess-HHI 0.5 → top sector ~55%). Not in any other standard fixture; this
+        # Concentrated dominant-sector fixture (excess-HHI 0.5 → top sector ~55%).
+        # Not in any other standard fixture; this
         # is where SE calibration of the size-weighted aggregate elasticity is stressed.
         # Thresholds PRE-REGISTERED from the :cue-with-true-guess reference run
         # (Nsims=400): n_successful=327, ζ_bias_mean=0.37, empirical SD=2.05,
@@ -576,21 +575,11 @@ mkpath(simresults_path)
 CSV.write(joinpath(simresults_path, "simulation_performance.csv"), all_results)
 
 # Per-replication diagnostics dump (445 KB, referenced by nothing) does NOT belong
-# in the package repo (umbrella decision 16). Write it to research output/. Default
-# to the monorepo's output tree (this package is a submodule at <monorepo>/GIV.jl);
-# override with GIV_DIAGNOSTICS_DIR when running the package standalone.
+# in the package repo. Set GIV_DIAGNOSTICS_DIR to write it elsewhere.
 diagnostics_dir = get(ENV, "GIV_DIAGNOSTICS_DIR", "")
 if isempty(diagnostics_dir)
-    monorepo_output = normpath(joinpath(@__DIR__, "..", "..", "output"))
-    if isdir(monorepo_output)
-        diagnostics_dir = joinpath(monorepo_output, "EstimateTreasuryDemandwithGIV",
-            "treasury-stability", "simresults")
-    end
-end
-if isempty(diagnostics_dir)
-    @warn "No research output/ tree found and GIV_DIAGNOSTICS_DIR unset; " *
-          "skipping the per-replication diagnostics dump (it is intentionally not " *
-          "written into the package repo — umbrella decision 16)."
+    @warn "GIV_DIAGNOSTICS_DIR unset; skipping the per-replication diagnostics dump " *
+          "(it is intentionally not written into the package repo)."
 else
     mkpath(diagnostics_dir)
     diag_path = joinpath(diagnostics_dir, "simulation_benchmark_diagnostics.csv")
