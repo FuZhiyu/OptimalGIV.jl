@@ -171,8 +171,7 @@ try
         ("baseline", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing, true,
             (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80,
              ζ_bias_broken=false, β_bias_broken=false, ζ_cov_broken=false, β_cov_broken=false)),
-        # β coverage: the incomplete-coverage (sandwich-routed, vcov-change-agnostic)
-        # arm lands inside the nominal band on the regenerated seed=1 fixtures, so its
+        # β coverage: the incomplete-coverage (sandwich-routed) arm lands inside the nominal band on the regenerated seed=1 fixtures, so its
         # β-coverage check is a live @test.
         ("10% missing", @formula(q + id & endog(p) ~ 0 + id & (η1 + η2)), "entity_specific", nothing, false,
             (bias_tol=0.05, β_bias_tol=0.1, coverage_range=(0.925, 0.975), min_success=80,

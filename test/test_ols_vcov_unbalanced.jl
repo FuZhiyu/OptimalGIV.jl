@@ -132,6 +132,24 @@ end
     end
     @test outcome isa LinearAlgebra.SingularException || size(outcome) == (9, 9)
 
+    # The rank check is global, so one collinear block drops the factor for every entity.
+    # `inv` keeps the exact zeros between blocks, so entity 2's block is exact.
+    present = [1:30, 6:40]
+    df, obs_index = _unbalanced_index(present, 40)
+    ids = Int.(levelcode.(df.id))
+    w, v = randn(length(ids)), randn(length(ids))
+    X = Float64.(hcat(ids .== 1, (ids .== 1) .* w, (ids .== 1) .* (0.1 .+ 0.3 .* w),
+        ids .== 2, (ids .== 2) .* v))
+    X₂ = X[ids.==2, 4:5]
+    σu² = [0.5, 2.0]
+    outcome = try
+        solve_ols_vcov(σu², X, obs_index)
+    catch err
+        err
+    end
+    @test outcome isa LinearAlgebra.SingularException ||
+          isapprox(outcome[4:5, 4:5], σu²[2] * inv(X₂'X₂); rtol=1e-12)
+
     # Full rank with an entity spanned by its own columns: that entity keeps σᵢ².
     present = [1:20, 1:3]
     df, obs_index = _unbalanced_index(present, 20)

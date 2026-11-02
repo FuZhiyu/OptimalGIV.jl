@@ -956,7 +956,7 @@ const OLSEntityBlock = Tuple{Int,Int,Vector{Int},Matrix{Float64}}
 
 # Rank of a cross-product at unit diagonal, so regressor units cannot change the answer.
 # The tolerance matters: the last pivot of a singular matrix is rounding noise of either
-# sign, so a tolerance of zero calls a collinear design full rank about half the time.
+# sign, so a tolerance of zero often calls a collinear design full rank.
 function full_column_rank(XX)
     d = sqrt.(diag(XX))
     any(iszero, d) && return false
@@ -975,15 +975,18 @@ which gives `σᵢ²/nᵢ` for the intercept of an entity observed in `nᵢ` per
 `kᵢ = tr((X'X)⁻¹ Xᵢ'Xᵢ)` is entity `i`'s leverage: the count of its fitted
 coefficients when it owns its columns, and its share of any pooled column.
 
-The correction is unbiased for entity-owned columns and for pooled columns under a
-common variance; with pooled columns and heteroskedastic entities it is approximate.
+Given `ζ`, the correction is unbiased for entity-owned columns and for pooled columns
+under a common variance; with pooled columns and heteroskedastic entities it is
+approximate, and the estimation of `ζ` is not counted.
 Effects absorbed by `fe()` are not counted, and `σu²vec` has already spent an absorbed
 intercept through `nᵢ - 1`, so the right divisor is about `nᵢ - 1 - kᵢ`. Under absorbed
 entity effects with pooled `X`, `kᵢ < 1` and the factor falls below one, understating
 the variance.
 
-Leverage has no meaning on a rank-deficient `X`, and an exactly fitted entity
-(`nᵢ = kᵢ`) has no residual degrees of freedom, so both cases keep `σ̃ᵢ² = σᵢ²`.
+Leverage has no meaning on a numerically rank-deficient `X`, and an exactly fitted
+entity (`nᵢ = kᵢ`) has no residual degrees of freedom, so both cases keep
+`σ̃ᵢ² = σᵢ²`. The rank check covers all of `X`, so one such block keeps `σᵢ²` for
+every entity.
 
 The degrees-of-freedom correction applies only here. `σu²vec` stays the `nᵢ - 1`
 variance that the estimating weights and the elasticity covariance use.
