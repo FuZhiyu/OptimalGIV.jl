@@ -603,11 +603,12 @@ function mean_moment_jacobian(ζ, q, Cp, C, S, obs_index, complete_coverage, pre
     momweight ./= sum(momweight)
 
     J = zeros(TT, Nm, Nm)
-    if !isnothing(Mweights)
+    period_weights = resolve_period_mweights(ζ, C, S, obs_index, complete_coverage, prec, Mweights)
+    if !isnothing(period_weights)
         for k in 1:Nm, m in 1:Nm
             acc = zero(TT)
             for t in 1:T
-                acc += Mweights[t] * Jt[m, k, t]
+                acc += period_weights[t] * Jt[m, k, t]
             end
             J[m, k] = acc / (T * momweight[m])
         end

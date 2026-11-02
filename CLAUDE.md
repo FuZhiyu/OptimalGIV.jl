@@ -53,7 +53,7 @@ touch estimator weights, the covariance route, the analytic Jacobian, or the
 |---|---|---|
 | `test/monte_carlo_timevarying_mweights.jl` | `simresults/timevarying_mweights_performance.csv` | `julia --project=. test/monte_carlo_timevarying_mweights.jl` |
 | `test/test_with_simulations.jl` | `simresults/simulation_performance.csv` (+ the per-replication diagnostics when `GIV_DIAGNOSTICS_DIR` is set) | `julia --project=. -e 'include("test/test_with_simulations.jl")'` |
-| `test/monte_carlo_fixed_weight.jl` | stdout report (efficiency/stability, no committed CSV) | `julia --project=. test/monte_carlo_fixed_weight.jl` |
+| `test/monte_carlo_fixed_weight.jl` | stdout report (efficiency/stability, no committed CSV; its two-step arm uses custom precisions, not `:twostep`) | `julia --project=. test/monte_carlo_fixed_weight.jl` |
 
 Pre-registered acceptance bands are fixed in the script header BEFORE the run; a
 failed band is escalated as a finding, never retuned. The per-replication
@@ -130,7 +130,7 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 ### Critical Implementation Details
 
 #### Initial Guess Requirements
-- Under the default `precision_weights = :twostep`, the default OLS guess is usually adequate; under `precision_weights = :cue`, provide a good initial guess
+- Never rely on the default OLS guess, even under `precision_weights = :twostep`: it rarely works, and under incomplete coverage it can report convergence at a negative aggregate elasticity. Pass a positive guess
 - Accept: scalar, vector, or Dict mapping coefficient names to values
 - For `:scalar_search`: Dict with "Aggregate" key
 

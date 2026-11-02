@@ -126,6 +126,16 @@ end
         autodiff=:central)
 end
 
+@testset "analytic Jacobian: incomplete coverage ignores period weights" begin
+    df = _load_simdata1()
+    _, m = build_error_function(df, _FEQ, :id, :t, :absS;
+        algorithm=:iv, complete_coverage=false, precision_weights=:raw_onestep)
+    ζ, prec, T = ones(5), ones(m.obs_index.N), m.obs_index.T
+    weighted = OptimalGIV.mean_moment_jacobian(ζ, m.uq, m.uCp, m.C, m.S, m.obs_index, false, prec;
+        Mweights=collect(1.0:T) ./ sum(1.0:T))
+    @test weighted == OptimalGIV.mean_moment_jacobian(ζ, m.uq, m.uCp, m.C, m.S, m.obs_index, false, prec)
+end
+
 @testset "analytic Jacobian: fewer kernel evaluations than finite differences" begin
     df = _load_simdata1()
     ef, mats = build_error_function(df, _FEQ, :id, :t, :absS;

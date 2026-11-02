@@ -8,9 +8,7 @@ using DataFrames, CategoricalArrays
 #
 # The full statistical acceptance bands live in the manual scripts
 # test/monte_carlo_timevarying_mweights.jl and test/monte_carlo_fixed_weight.jl
-# (run cadence documented in CLAUDE.md). Those bars used to be the ONLY guard on
-# the two-step estimator, so the 2026-07-23 vcov-routing change rotted the
-# recorded evidence for two days before anyone noticed. This tier runs a handful
+# (run cadence documented in CLAUDE.md). This tier runs a handful
 # of SMALL seeded draws inside `Pkg.test` so a routing regression, an SE-formula
 # transposition, or a gross SE-calibration break trips the suite immediately.
 # It asserts deterministic structural invariants plus a WIDE SE-calibration

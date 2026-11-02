@@ -28,7 +28,6 @@ q, p, C, Cp, η, S, exclmat, obs_index = GIV.generate_matrices(df, f, id, t, wei
     :absS;
     guess=Dict("group" => ones(10)),
     algorithm=:iv_twopass,
-    complete_coverage=true,
     return_vcov=false,
     solver_options=(; show_trace=true)
 )
@@ -41,7 +40,6 @@ q, p, C, Cp, η, S, exclmat, obs_index = GIV.generate_matrices(df, f, id, t, wei
     :absS;
     guess=Dict("group" => ones(10)),
     algorithm=:iv,
-    complete_coverage=true,
     return_vcov=false,
     solver_options=(; show_trace=true)
 )
@@ -54,7 +52,6 @@ q, p, C, Cp, η, S, exclmat, obs_index = GIV.generate_matrices(df, f, id, t, wei
     :absS;
     guess=Dict("group" => ones(10)),
     algorithm=:iv_vcov,
-    complete_coverage=true,
 )
 
 # qmat, pmat, Cts, ηts, Smat, uqmat, λq, uCpts, λCp, meanqmat, meanpmat, meanCpts, meanηts = OptimalGIV.generate_matrices(df, f, id, t, weight; algorithm = :iv, quiet = false)

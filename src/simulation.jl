@@ -218,7 +218,8 @@ simulated_dfs = simulate_data(
 
 # Use the first dataset for estimation
 df = simulated_dfs[1]
-model = giv(df, @formula(q + id & endog(p) ~ fe(id) & (η1 + η2 + η3)), :id, :t, :S)
+model = giv(df, @formula(q + id & endog(p) ~ fe(id) & (η1 + η2 + η3)), :id, :t, :S;
+    complete_coverage = true)
 ```
 
 # Data Generating Process

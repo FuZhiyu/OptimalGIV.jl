@@ -267,7 +267,10 @@ complete-coverage, in-domain `:twostep` or `:cue` — and the masked empirical
 sandwich otherwise (see the table above). `:sandwich` forces the sandwich,
 built from exactly the entity and period weights frozen in the estimating
 moments and the same non-excluded entity pairs used by those moments, on any
-supported route. `:optimal` requires the information formula and errors when
+supported route. Its robustness covers the elasticities only: the covariance of
+the exogenous coefficients inherits the sandwich through the elasticities but
+keeps an OLS term built from entity residual variances. `:optimal` requires the
+information formula and errors when
 its restrictions fail. The information formula is efficient under a
 maintained second-moment model (time-constant entity variances,
 cross-entity-independent second moments); the sandwich stays consistent when
@@ -337,7 +340,7 @@ Internal PC extractions are supported. With internal PCs, the moment conditions 
 
 ## Initial Guesses
 
-When `guess` is omitted, the package uses OLS coefficients. This is usually adequate for the default fixed-weight first step; `precision_weights=:cue` is more sensitive and may require a well-chosen starting value.
+A good initial guess is the key to stable estimates. When `guess` is omitted, the package uses OLS coefficients, which rarely work well, including under the default `precision_weights=:twostep`: under incomplete coverage, such a fit can report convergence at a negative aggregate elasticity. Pass a positive starting value; `precision_weights=:cue` is especially sensitive to it.
 
 Initial parameter guesses can be provided in several formats:
 
