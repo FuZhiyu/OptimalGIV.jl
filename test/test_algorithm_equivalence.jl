@@ -148,7 +148,7 @@ end
 end
 
 
-@testset "standard error equivalence" begin
+@testset "CUE coverage routes: equal roots, distinct covariance assumptions" begin
     using CategoricalArrays
     df = CSV.read("$(@__DIR__)/../examples/simdata1.csv", DataFrame)
     df.id = CategoricalArray(df.id)
@@ -161,6 +161,8 @@ end
         guess=ones(5),
         quiet=true,
         algorithm=:iv_twopass,
+        complete_coverage=true,
+        precision_weights=:cue,  # pin: this testset compares the CUE-optimal vs sandwich vcov
     )
 
     givmodel2 = giv(
@@ -172,9 +174,14 @@ end
         guess=ones(5),
         quiet=true,
         algorithm=:iv_twopass,
-        complete_coverage=false, # use the nonoptimal vcov algorithm
+        precision_weights=:cue,
+        complete_coverage=false, # use the empirical masked sandwich
     )
 
     @test maximum(abs, coef(givmodel2) - coef(givmodel)) < 1e-6
-    @test maximum(abs, vcov(givmodel2) - vcov(givmodel)) < 1e-6
+    # Equal period weights make the estimating roots coincide, but explicit
+    # incomplete coverage now uses centered empirical period-score meat and the
+    # full CUE Jacobian. It is not the model-implied complete-market information
+    # covariance, even when this realized fixture happens to add up.
+    @test maximum(abs, vcov(givmodel2) - vcov(givmodel)) > 1e-2
 end

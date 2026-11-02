@@ -6,11 +6,16 @@
 [![Build Status](https://app.travis-ci.com/fuzhiyu/OptimalGIV.jl.svg?branch=main)](https://app.travis-ci.com/fuzhiyu/OptimalGIV.jl)
 [![Coverage](https://codecov.io/gh/fuzhiyu/OptimalGIV.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/fuzhiyu/OptimalGIV.jl)
 
-Estimate models using granular instrument variables (GIV), with optimal weighting schemes. 
+Estimate models using granular instrumental variables (GIV), with efficient weighting schemes.
 
-The core algorithms are thoroughly tested using simulations, but documentations are under development and bugs may exists for minor features. Feature requests and bug reports are welcomed. For the details of the algorithm implementation, please refer to the source code and [the companion paper](https://fuzhiyu.me/TreasuryGIVPaper/Treasury_GIV_draft.pdf).
+The core algorithms are tested using simulations. Feature requests and bug reports are welcome. For details of the model and estimator, see [the companion paper](https://fuzhiyu.me/TreasuryGIVPaper/Treasury_GIV_draft.pdf).
 
 For Python users, a Python wrapper can be found [here](https://github.com/FuZhiyu/optimalgiv).
+
+> [!IMPORTANT]
+> v0.4.0 introduces a feasible two-step estimator, `precision_weights=:twostep`, and makes it the default for `:iv` and `:iv_twopass` in place of the continuous updating estimator of earlier versions (`:cue`), for solver stability. The moment conditions weight each entity by its precision, $1/\operatorname{var}(u_i)$, and, under complete coverage, each period by the multiplier $M_t=1/\zeta_{S,t}$. Both weights depend on the elasticities, and `:cue` recomputes them at every candidate. `:twostep` instead solves once with precisions from `q` residualized on the controls and equal period weights, recomputes both weights at that estimate, freezes them, and solves once more. Pass `precision_weights=:cue` to recover earlier point estimates.
+>
+> `complete_coverage` is now required, and standard errors change for incomplete-coverage and `exclude_pairs` fits. See the [release notes](NEWS.md).
 
 ### Model Specification
 
@@ -26,11 +31,11 @@ q_{i,t} & =-p_{t}\times\mathbf{C}_{i,t}'\boldsymbol{\zeta}+\mathbf{X}_{i,t}'\bol
 \end{aligned}
 ```
 
-where $q_{i,t}$ and $p_{t}$ are endogenous, $S$ is the weighting variable $X_S$ indicates $S$ weighted summation. 
+where $q_{i,t}$ and $p_t$ are endogenous, $S$ is the entity-size variable, and the subscript $S$ denotes an $S$-weighted sum.
 
-The model is estimated with the following moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$. See referenced for details.
+The model is estimated with the moment condition $\mathbb E[u_{i,t}u_{j,t}] = 0$ for non-excluded entity pairs.
 
-Unbalanced panel is allowed. However, certain algorithms only work with complete coverage ($\sum_{i}S_{i,t}q_{i,t} = 0$ holds in-sample). Cares need to be taken when interpreting the results without complete coverage. 
+Unbalanced panels are allowed. The caller must declare whether the sampled entities cover the full market with `complete_coverage=true` or `false`. In-sample adding-up, $\sum_i S_{i,t}q_{i,t}=0$, is required when complete coverage is declared, but it cannot establish that omitted entities do not exist. The package therefore validates `true` rather than inferring coverage from adding-up.
 
 
 ## Installation
@@ -56,6 +61,8 @@ model = giv(df,
     @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)), 
     :id, :t, :S;
     algorithm = :iv, 
+    complete_coverage = true,
+    precision_weights = :twostep,
     save = :all, # fixed effects will also be saved in the coefdf
     guess = ones(10) * 2.0
 )
@@ -66,11 +73,11 @@ println(model)
 # ───────────────────────────────────────────────────────────────────────────
 #             Estimate  Std. Error   t-stat  Pr(>|t|)    Lower 95%  Upper 95%
 # ───────────────────────────────────────────────────────────────────────────
-# id: 1 & p    3.58315    1.39997   2.55945    0.0106   0.835899      6.33039
-# id: 10 & p   2.85081    0.567497  5.02347    <1e-06   1.73717       3.96444
-# id: 2 & p    2.07155    0.592432  3.49668    0.0005   0.908981      3.23411
-# id: 3 & p    1.17017    0.593346  1.97216    0.0489   0.00581219    2.33453
-# id: 4 & p    1.17624    0.608863  1.93187    0.0537  -0.0185676     2.37105
+# id: 1 & p    3.58314    1.39997   2.55945    0.0106   0.835828      6.33046
+# id: 10 & p   2.85081    0.567497  5.02347    <1e-06   1.73714       3.96447
+# id: 2 & p    2.07155    0.592432  3.49668    0.0005   0.908951      3.23414
+# id: 3 & p    1.17017    0.593346  1.97216    0.0489   0.00578455    2.33456
+# id: 4 & p    1.17624    0.608863  1.93187    0.0537  -0.0185964     2.37108
 # ...
 ```
 
@@ -127,17 +134,19 @@ giv(df, formula, id, t, weight; kwargs...)
 #### Keyword Arguments:
 - `algorithm`: `:iv` (default), `:debiased_ols`, `:scalar_search`, or `:iv_twopass`
 - `guess`: Initial parameter guess (vector, number, or Dict)
-- `exclude_pairs`: Dictionary specifying entity pairs to exclude from moment conditions. 
+- `exclude_pairs`: Dictionary of `id` values specifying entity pairs to exclude from moment conditions. Only `:iv` and `:iv_twopass` accept it.
   Example: `Dict(1 => [2, 3], 4 => [5])` excludes pairs (1,2), (1,3), and (4,5)
 - `quiet`: Suppress warnings and information messages if true (default: false)
 - `save`: Save additional information - `:none` (default), `:residuals`, `:fe`, or `:all`
 - `save_df`: If true, the full estimation DataFrame (including residuals, coefficients, and fixed-effects columns when requested) is stored in the returned model. When PC extraction is used, PC factors and loadings are also included.
-- `complete_coverage`: Whether entities in the dataset cover the full market (auto-detected by checking the market clearing condition within the dataset). `scalar_search` and `debiased_ols` algorithms require full-market coverage. One can overwrite it by providing this keyword argument (not recommended; only for debugging). 
+- `complete_coverage`: Required Boolean declaring whether the sampled entities cover the full market. A `true` declaration is validated by the in-sample adding-up condition. Adding-up does not select the coverage regime.
+- `precision_weights`: IV weighting mode: `:twostep` (default), `:raw_onestep`, `:cue`, or a custom entity-length vector. See [Estimator Weighting](#estimator-weighting).
+- `vcov`: Covariance route: `:auto` (default), `:sandwich`, or `:optimal`. See [Covariance Routing](#covariance-routing).
 - `return_vcov`: Calculate variance-covariance matrix (default: true, automatically disabled when PC extraction is used)
 - `contrasts`: Contrasts specification for categorical variables (following StatsModels.jl). Untested. Use with cautions.
 - `tol`: Convergence tolerance (default: 1e-6)
 - `iterations`: Maximum iterations (default: 100)
-- `solver_options`: Options for the nonlinear solvers from `NLsolve.jl`
+- `solver_options`: Options for the nonlinear solvers from `NLsolve.jl`. Fixed-weight IV solves without `pc(k)` use the analytic Jacobian and ignore `autodiff`.
 - `pca_option`: Options for HeteroPCA.jl PC extraction (default: `(; impute_method=:zero, demean=false, maxiter=1000, algorithm=DeflatedHeteroPCA(t_block=10))`) 
 
 ### Working with Results
@@ -172,6 +181,10 @@ exog_coefnames(model)    # Names of exogenous-term coefficients
 
 model.coefdf             # DataFrame with entity-specific coefficients (see below)
 model.converged          # Convergence status
+model.precision_weights  # Resolved weighting mode
+model.entity_precision   # Fixed entity precisions in the final solve (nothing under :cue)
+model.period_weights     # Frozen period weights (nothing unless complete-coverage :twostep)
+model.vcov_method        # Covariance route: :optimal, :sandwich, or :none
 model.n_pcs              # Number of principal components extracted
 model.pc_factors         # PC factors (k×T matrix, or nothing if n_pcs=0)
 model.pc_loadings        # PC loadings (N×k matrix, or nothing if n_pcs=0)
@@ -210,16 +223,81 @@ first(model.coefdf, 5)
 #  Row │ id      id & p_coef  id & η1_coef  id & η2_coef  fe_id     
 #      │ String  Float64      Float64       Float64       Float64   
 # ─────┼────────────────────────────────────────────────────────────
-#    1 │ 1           3.58315     6.67398         1.95733  0.550752
-#    2 │ 10          2.85081    -0.0851448       1.68483  0.0775327
+#    1 │ 1           3.58314     6.67398         1.95733  0.550752
+#    2 │ 10          2.85081    -0.0851456       1.68483  0.0775326
 #    3 │ 2           2.07155     2.87146         2.91998  0.738134
 #    4 │ 3           1.17017     3.55465         4.05976  0.36872
-#    5 │ 4           1.17624     0.542161        1.91074  0.470043
+#    5 │ 4           1.17624     0.542163        1.91074  0.470043
 ```
+
+## Estimator Weighting
+
+The `precision_weights` modes below apply to `algorithm=:iv` and its reference
+implementation, `:iv_twopass`. Here $\widetilde{\zeta}$ denotes the first-step
+estimate and $M_t$ is the complete-coverage period multiplier.
+
+| Mode | Entity weights | Period weights | IV moment system | Covariance (`vcov=:auto`) |
+|---|---|---|---|---|
+| `:raw_onestep` | Fix $1/\operatorname{var}(uq_i)$ before solving | Equal | Exact quadratic | Sandwich with the same fixed weights (not eligible for the information formula) |
+| Custom vector | Fix the supplied entity weights before solving | Equal | Exact quadratic | Sandwich with the same fixed weights (not eligible for the information formula) |
+| `:twostep` (default) | Step 1 uses raw weights; step 2 fixes $1/\operatorname{var}(\widehat u_i(\widetilde{\zeta}))$ | Step 1 is equal; complete-coverage step 2 fixes $M_t(\widetilde{\zeta})$ | Two exact-quadratic solves | Information formula when eligible (converged, complete coverage, in-domain); sandwich with the frozen weights of the reported solve otherwise |
+| `:cue` | Recompute residual-based weights at every candidate | Recompute $M_t$ at every candidate under complete coverage; none otherwise | Nonlinear | Information formula when eligible (converged, complete coverage, in-domain); sandwich otherwise (including incomplete coverage) |
+
+Feasible two-step GMM therefore has exactly two solves. Step 1 uses raw entity
+weights and equal period weights to obtain $\widetilde{\zeta}$. The estimator
+then computes both applicable weight families at $\widetilde{\zeta}$ and holds
+them fixed during the single step-2 solve for $\widehat{\zeta}_2$. It does not
+update weights within step 2.
+
+The exact-quadratic entries assume no `pc(k)`, because internal factor loadings
+move with $\zeta$.
+
+The paper defines $M_t=1/\zeta_{S,t}$ on the maintained domain
+$\zeta_{S,t}>0$. To keep trial evaluations finite during nonlinear iteration,
+the package evaluates a normalized version of
+`1 / clamp(abs(ζS_t), sqrt(eps), Inf)` off that domain. This numerical extension
+does not change the estimand: a reported complete-coverage root with
+nonpositive or near-zero aggregate elasticity is marked non-converged.
+
+## Covariance Routing
+
+The `vcov` keyword selects the covariance route. `:auto` (default) reports the
+model-implied information-formula covariance for an eligible fit — converged,
+complete-coverage, in-domain `:twostep` or `:cue` — and the masked empirical
+sandwich otherwise (see the table above). `:sandwich` forces the sandwich,
+built from exactly the entity and period weights frozen in the estimating
+moments and the same non-excluded entity pairs used by those moments, on any
+supported route. Its robustness covers the elasticities only: the covariance of
+the exogenous coefficients inherits the sandwich through the elasticities but
+keeps an OLS term built from entity residual variances. `:optimal` requires the
+information formula and errors when
+its restrictions fail. The information formula is efficient under a
+maintained second-moment model (time-constant entity variances,
+cross-entity-independent second moments); the sandwich stays consistent when
+that model fails, so the robust alternative is one keyword away.
+
+`:debiased_ols` and `:scalar_search` always report the information formula and
+reject `vcov=:sandwich`. An explicit `:sandwich` or `:optimal` errors with
+`pc(k)` or `return_vcov=false`.
+
+The sandwich's Jacobian follows the orientation of the pairwise IV estimating
+equations themselves — it is the empirical bread/meat estimator, distinct
+from the model-implied information matrix `:optimal` reports.
 
 ## Algorithms
 
-The package implements four algorithms for GIV estimation:
+The package implements four algorithms for GIV estimation. Coverage support is:
+
+| Algorithm | Complete coverage | Incomplete coverage |
+|---|---:|---:|
+| `:iv` | Yes | Yes |
+| `:iv_twopass` | Yes | Yes |
+| `:debiased_ols` | Yes | No |
+| `:scalar_search` | Yes | No |
+
+Every call must specify the coverage regime. `:debiased_ols` and
+`:scalar_search` are separate full-market estimators; the fixed-quadratic and
+`precision_weights` descriptions above concern the two IV implementations.
 
 ### 1. `:iv` (Instrumental Variables)
 The most flexible algorithm using the moment condition E[u_i u_{S,-i}] = 0. This is the default and recommended algorithm for most applications. It uses an efficient O(N) implementation. It allows for:
@@ -238,8 +316,9 @@ Numerically identical to `:iv` but uses a more straightforward O(N²) implementa
 - PC extraction: Supports internal factor extraction using `pc(k)` in formulas
 
 ### 3. `:debiased_ols` 
-Uses the moment condition E[u_i C_it p_it] = 1/ζ_St σ_i². Requires the adding-up constraint to be satisfied (entities must cover the full market). More efficient when applicable but more restrictive.
+Uses the moment condition E[u_i C_it p_it] = 1/ζ_St σ_i². Requires the sampled entities to cover the full market and the adding-up constraint to hold. More efficient when applicable but more restrictive.
 - PC extraction: Not supported with this algorithm
+- Weighting: `:cue` only, which is used when `precision_weights` is omitted; fixed-weight modes are rejected
 
 ### 4. `:scalar_search`
 Efficient algorithm when the aggregate elasticity is constant across time. Searches for a scalar aggregate elasticity value. Useful for diagnostics or forming initial guesses. Requires:
@@ -247,6 +326,7 @@ Efficient algorithm when the aggregate elasticity is constant across time. Searc
 - Constant weights across time
 - Complete market coverage
 - PC extraction: Not supported with this algorithm
+- Weighting: Takes no `precision_weights`; an explicit value is rejected
 
 ## Internal PCA
 
@@ -260,7 +340,7 @@ Internal PC extractions are supported. With internal PCs, the moment conditions 
 
 ## Initial Guesses
 
-A good initial guess is the key to stable estimates. If initial guess is not provided, by default the algorithm uses the OLS estimates as the initial guess, which rarely works well. 
+A good initial guess is the key to stable estimates. When `guess` is omitted, the package uses OLS coefficients, which rarely work well, including under the default `precision_weights=:twostep`: under incomplete coverage, such a fit can report convergence at a negative aggregate elasticity. Pass a positive starting value; `precision_weights=:cue` is especially sensitive to it.
 
 Initial parameter guesses can be provided in several formats:
 
@@ -300,10 +380,14 @@ err_func, components = build_error_function(df,
     @formula(q + endog(p) ~ fe(id) + id & (η1 + η2)), 
     :id, :t, :S;
     algorithm = :iv, 
+    complete_coverage = true,
+    precision_weights = :raw_onestep,
 )
 
 # The returned components depend on the algorithm:
-# For :iv algorithm: (uq=uq, uCp=uCp, C=C, S=S, obs_index=obs_index), where uq and uCp are the residual of q and Cp (endogeous p interacted with exogenous variables) residualized against right hand side. 
+# For :iv, the components include uq, uCp, C, S, and obs_index, where uq and
+# uCp are q and the endogenous-price interactions residualized against the
+# right-hand side.
 # For :scalar_search: (uqmat=uqmat, p=p, S_vec=S_vec, coefmapping=coefmapping)
 
 # Use with custom optimization
@@ -332,6 +416,10 @@ The error function represents the moment conditions:
 - For `:scalar_search`: Searches for aggregate elasticity ζ_S
 
 Access to these low-level functions enables advanced users to implement custom estimation procedures or diagnostic tools.
+
+`build_error_function(...; precision_weights=:twostep)` exports the raw
+first-step map only; it does not run two estimator solves. Use `giv` to estimate
+the feasible two-step model.
 
 ### Simulation
 
@@ -367,6 +455,7 @@ The `simulate_data` function accepts a NamedTuple with the following parameters:
 - `ushare`: Share of price variation explained by idiosyncratic shocks (default: 0.2 if K>0)
 - `σᵤcurv`: Curvature for size-dependent volatility (default: 0.1)
 - `ν`: Degrees of freedom for t-distribution (default: Inf = Normal)
+- `ζalign`: Alignment of elasticities with shock volatilities: 0 = independent, -1 = largest ζ on smallest-σᵤ entities, +1 = aligned (default: 0)
 - `missingperc`: Percentage of missing values (default: 0.0)
 
 The generated data follows:
@@ -380,12 +469,12 @@ The generated data follows:
 - **Variance-covariance matrix**: When PC extraction is used (`pc(k)` in formula), the variance-covariance matrix calculation is automatically disabled as it is not correct. One should consider bootstrapping instead.
 - Time fixed effects are not supported directly, but one can use a single factor `pc(1)` instead; 
 - Some algorithms require balanced panels
-- The `:debiased_ols` and `:scalar_search` algorithms require complete market coverage
+- The `:debiased_ols` and `:scalar_search` algorithms require complete market coverage; only `:iv` and `:iv_twopass` support incomplete coverage
+- Coverage must be supplied explicitly; an in-sample adding-up check cannot establish that the dataset includes the whole market
 
 ## To-do List
 
 - Support for standard GIV
-- Analytical Jacobian
 - Interface with RegressionTables.jl
 
 ## References

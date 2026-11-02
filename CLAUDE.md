@@ -41,6 +41,35 @@ include("test/test_algorithm_equivalence.jl")
 include("test/test_with_simulations.jl")
 ```
 
+### Monte Carlo acceptance scripts (manual cadence)
+
+The statistical acceptance evidence lives in manual scripts, not `Pkg.test`. Their
+recorded outputs go stale silently when estimator internals change (e.g. a vcov
+routing change), so **re-run them and refresh their recorded CSVs whenever you
+touch estimator weights, the covariance route, the analytic Jacobian, or the
+`vcov` selector** — and commit the refreshed CSV in the same change:
+
+| Script | Refreshes | Run (from the package root, with the test-only deps available at their `Project.toml` compat) |
+|---|---|---|
+| `test/monte_carlo_timevarying_mweights.jl` | `simresults/timevarying_mweights_performance.csv` | `julia --project=. test/monte_carlo_timevarying_mweights.jl` |
+| `test/test_with_simulations.jl` | `simresults/simulation_performance.csv` (+ the per-replication diagnostics when `GIV_DIAGNOSTICS_DIR` is set) | `julia --project=. -e 'include("test/test_with_simulations.jl")'` |
+| `test/monte_carlo_fixed_weight.jl` | stdout report (efficiency/stability, no committed CSV; its two-step arm uses custom precisions, not `:twostep`) | `julia --project=. test/monte_carlo_fixed_weight.jl` |
+
+Pre-registered acceptance bands are fixed in the script header BEFORE the run; a
+failed band is escalated as a finding, never retuned. The per-replication
+`simulation_benchmark_diagnostics.csv` is written only to `GIV_DIAGNOSTICS_DIR`,
+NOT into this package repo.
+
+`simulations/` is git-ignored and reused as found. Delete it before rerunning
+`test_with_simulations.jl`: the recorded CSV comes from freshly generated seed-1
+fixtures, and older local fixtures give different numbers.
+
+`Pkg.test` carries a cheap `test/test_twostep_mc_smoke.jl` tier that guards the
+two-step **routing** (`:auto`→information formula, `:sandwich`→frozen bundle) and
+gross SE calibration on a handful of seeded draws, so a routing regression trips
+the unit suite immediately instead of rotting until the next manual MC run. The
+smoke tier is a tripwire, not a replacement for the full statistical bands above.
+
 ### REPL Development
 ```julia
 # Load package in development mode
@@ -50,7 +79,9 @@ using OptimalGIV
 # Quick test with simulated data
 df = simulate_data((; M = 0.5, N = 10), Nsims = 1, seed = 1)[1]
 model = giv(df, @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)), 
-            :id, :t, :S; algorithm = :iv, guess = ones(10) * 2.0)
+            :id, :t, :S; algorithm = :iv, precision_weights = :twostep,
+            complete_coverage = true,
+            guess = ones(10) * 2.0)
 ```
 
 ## Code Architecture
@@ -69,10 +100,10 @@ model = giv(df, @formula(q + id & endog(p) ~ fe(id) + id & (η1 + η2)),
 
 The package implements four estimation algorithms, each with different moment conditions:
 
-1. **`:iv` (default)**: Uses E[u_i u_{S,-i}] = 0, O(N) optimized implementation
-2. **`:iv_twopass`**: Same as `:iv` but O(N²) implementation for debugging
+1. **`:iv` (default)**: Uses E[u_i u_{S,-i}] = 0, O(N) optimized implementation; supports complete and incomplete coverage
+2. **`:iv_twopass`**: Same as `:iv` but O(N²) implementation for debugging; supports complete and incomplete coverage
 3. **`:debiased_ols`**: Uses E[u_i C_it p_it] = 1/ζ_St σ_i², requires complete coverage
-4. **`:scalar_search`**: Searches for constant aggregate elasticity, requires balanced panel
+4. **`:scalar_search`**: Searches for constant aggregate elasticity, requires a balanced panel and complete coverage
 
 ### Key Design Patterns
 
@@ -99,14 +130,26 @@ The package extends StatsModels.jl with a custom `endog()` function to mark endo
 ### Critical Implementation Details
 
 #### Initial Guess Requirements
-- **Never rely on default OLS guesses** - they rarely work
+- Never rely on the default OLS guess, even under `precision_weights = :twostep`: it rarely works, and under incomplete coverage it can report convergence at a negative aggregate elasticity. Pass a positive guess
 - Accept: scalar, vector, or Dict mapping coefficient names to values
 - For `:scalar_search`: Dict with "Aggregate" key
 
+#### Solver Configuration
+- Keep dependency-specific solver settings inside `solver_options`; do not add top-level solver or PC-solver keywords
+
+#### IV Weighting and Covariance
+- `:raw_onestep` and custom entity weights use equal period weights and one fixed-weight solve
+- `:twostep` first uses raw entity weights and equal period weights; it computes entity precisions and complete-coverage period weights at the first-step estimate, then freezes both for one second solve
+- `:cue` recomputes every applicable weight at each candidate estimate
+- Without `pc(k)`, fixed-weight IV solves are exact quadratic systems under both coverage regimes
+- `vcov` selects the covariance route: `:auto` (default) reports the information-formula covariance for an eligible fit — converged, complete-coverage, in-domain `:twostep` or `:cue` — and the masked sandwich (exact frozen estimating weights, same non-excluded pairs) otherwise; `:sandwich` forces the sandwich on any supported route; `:optimal` requires the information formula and errors where its restrictions fail. `:raw_onestep` and custom-weight fits are never eligible for the information formula
+- The economic multiplier is `M_t = 1 / ζS_t` for positive aggregate elasticity. The absolute-value clamp is only a finite off-domain iteration rule; final complete-coverage roots must satisfy the positive-domain check
+
 #### Panel Data Handling
 - Unbalanced panels supported for `:iv` algorithms
-- Complete coverage (Σ S_it q_it = 0) required for `:debiased_ols` and `:scalar_search`
-- Auto-detects coverage by checking market clearing in-sample
+- Every estimator entry point requires an explicit `complete_coverage::Bool`
+- Complete coverage is an economic property of the data design; in-sample market clearing validates `true` but does not select the regime
+- Complete coverage is required for `:debiased_ols` and `:scalar_search`; only `:iv` and `:iv_twopass` accept incomplete coverage or `exclude_pairs`
 
 #### Error Function Export
 `build_error_function()` returns the raw moment condition function and matrices, enabling:
@@ -121,11 +164,21 @@ Tests are organized by functionality:
 - `test_interface.jl`: API and input validation
 - `test_estimates.jl`: Estimation accuracy against known values
 - `test_algorithm_equivalence.jl`: Consistency across algorithms
+- `test_fixed_weight_mode.jl`: Weighting modes, two-step freezing, and API compatibility
+- `test_vcov_scope.jl`, `test_vcov_coincidence_fixtures.jl`: Covariance routing, exclusions, and known-answer covariance fixtures
+- `test_analytic_jacobian.jl`: Analytic Jacobian against automatic differentiation
+- `test_nonfinite_guards.jl`: `NonfiniteMomentError` diagnosis
+- `test_twostep_mc_smoke.jl`: Cheap two-step routing and SE calibration tripwire
 - `test_with_simulations.jl`: Monte Carlo validation (slow, excluded from CI)
 
 ## Common Pitfalls
 
-1. **Convergence Issues**: Always provide good initial guesses
-2. **Coverage Assumptions**: Check `model.complete_coverage` before using `:debiased_ols`
+1. **Convergence Issues**: Provide good initial guesses, especially under `precision_weights = :cue`
+2. **Coverage Assumptions**: Set `complete_coverage` from the data design; do not infer it from sample adding-up
 3. **Missing Data**: Package doesn't handle missing values - clean data first
 4. **Memory Usage**: Large panels with entity interactions can be memory-intensive
+5. **Exact-zero pinning**: The package has no `pin_zero` keyword — pinning a
+   coefficient at zero is exactly column subsetting of the loading matrix, so it
+   is implemented caller-side: build the reduced loading columns, fit, then
+   re-expand the coefficient/covariance to the full shape with exact zeros on the
+   pinned row/column

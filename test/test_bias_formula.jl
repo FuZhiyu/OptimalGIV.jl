@@ -29,7 +29,7 @@ function simulate_estimate_evaluate(Nsims;
 
     for (i, df) in enumerate(simulated_dfs)
         # Estimate and evaluate the model
-        metrics = OptimalGIV.estimate_and_evaluate(df, formula; estimation_parameters...)
+        metrics = OptimalGIV.estimate_and_evaluate(df, formula; complete_coverage=true, estimation_parameters...)
 
         # bias from estimate_and_evaluate: (estimated - true) where true = 1/M
         # To match the downward bias formula in terms of true elasticity

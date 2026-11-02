@@ -1,6 +1,6 @@
 name = "OptimalGIV"
 uuid = "bf339e5b-51e6-4b7b-82b3-758165633231"
-version = "0.2.2"
+version = "0.4.0"
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
@@ -29,6 +29,7 @@ DataFrames = "0.21, 0.22, 1"
 Distributions = "0.25"
 FixedEffectModels = "1.12"
 FixedEffects = "2.3"
+ForwardDiff = "0.10, 1"
 HeteroPCA = "0.1.1"
 LinearAlgebra = "1.6"
 NLsolve = "4"
@@ -50,7 +51,9 @@ julia = "1.9"
 [extras]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "CSV", "CategoricalArrays"]
+test = ["Test", "CSV", "CategoricalArrays", "ForwardDiff", "Logging"]
