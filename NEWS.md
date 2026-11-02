@@ -1,6 +1,6 @@
 # News
 
-## v0.4.0 (unreleased)
+## v0.3.0 (unreleased)
 
 ### Breaking changes
 

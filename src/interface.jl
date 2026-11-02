@@ -436,7 +436,7 @@ end
 Resolve the entity precision-weight vector for the fixed-weight estimation modes.
 
 - `:cue`  → `nothing`; the moment code keeps updating `1/σᵢ²(ζ)` each evaluation
-  (continuously updated GMM, the default before v0.4.0).
+  (continuously updated GMM, the default before v0.3.0).
 - `:raw_onestep` → `1/var(uqᵢ)` computed once from the FE/control-residualized flows,
   with equal period weights, so without `pc(k)` the IV moment map is a fixed
   quadratic in ζ under either coverage regime.
